@@ -1,0 +1,72 @@
+# NGINX ingress. Routing mirrors the frontend nginx.conf / dev proxy:
+#   /                     -> frontend
+#   /api/metrics/*        -> metrics-service   (rewritten to /metrics/*)
+#   /api/*               -> chat-service       (rewritten to /*, SSE-friendly)
+#
+# The metrics ingress path is longer/more specific, so NGINX matches it before
+# the generic /api rule.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: metrics-api
+  namespace: llm-observability
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /metrics/$2
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: llm-observability.local
+      http:
+        paths:
+          - path: /api/metrics(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: metrics-service
+                port: { number: 8004 }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chat-api
+  namespace: llm-observability
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    # Stream SSE responses without buffering.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: llm-observability.local
+      http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: chat-service
+                port: { number: 8001 }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend
+  namespace: llm-observability
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: llm-observability.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port: { number: 80 }

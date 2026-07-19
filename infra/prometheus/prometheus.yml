@@ -1,0 +1,49 @@
+# Prometheus scrape configuration. Every service exposes /metrics on its own
+# port; service names resolve on the Docker network.
+
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+  external_labels:
+    monitor: llm-observability
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: chat-service
+    static_configs:
+      - targets: ["chat-service:8001"]
+        labels: { service: chat-service }
+
+  - job_name: ingestion-service
+    static_configs:
+      - targets: ["ingestion-service:8002"]
+        labels: { service: ingestion-service }
+
+  - job_name: consumer-service
+    static_configs:
+      - targets: ["consumer-service:8003"]
+        labels: { service: consumer-service }
+
+  - job_name: metrics-service
+    static_configs:
+      - targets: ["metrics-service:8004"]
+        labels: { service: metrics-service }
+
+  # Per-container CPU/memory, exported by the host-side
+  # infra/docker/docker_stats_exporter.py (see its docstring for why: cAdvisor
+  # can't reach the Docker daemon from inside a container on Docker Desktop
+  # for Mac). host.docker.internal resolves to the host automatically.
+  - job_name: docker-stats
+    static_configs:
+      - targets: ["host.docker.internal:9101"]
+
+  # Kubernetes HPA/deployment replica counts, from kube-state-metrics running
+  # in the local `kind` cluster (infra/k8s/40-kube-state-metrics.yaml).
+  # Reachable because this Prometheus container is also joined to the
+  # `kind` docker network (`docker network connect kind <prometheus>`).
+  - job_name: kubernetes-hpa
+    static_configs:
+      - targets: ["llm-obs-control-plane:30080"]

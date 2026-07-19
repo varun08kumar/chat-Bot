@@ -1,0 +1,111 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-service
+  namespace: llm-observability
+  labels: { app: chat-service }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: chat-service }
+  template:
+    metadata:
+      labels: { app: chat-service }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8001"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: chat-service
+          image: llm-obs/chat-service:0.1.0
+          ports:
+            - containerPort: 8001
+          envFrom:
+            - configMapRef: { name: platform-config }
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: DATABASE_URL } }
+            - name: OPENAI_API_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: OPENAI_API_KEY } }
+            - name: ANTHROPIC_API_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: ANTHROPIC_API_KEY } }
+            - name: GROQ_API_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: GROQ_API_KEY } }
+            - name: GEMINI_API_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: GEMINI_API_KEY } }
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8001 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8001 }
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          # Memory request sized with headroom above idle usage (~210Mi):
+          # at 256Mi, idle sat at ~82% utilization - above the HPA's 80%
+          # memory target - which pinned replicas at their scaled-up count
+          # forever, since idle usage doesn't fall as replicas increase.
+          resources:
+            requests: { cpu: "200m", memory: "384Mi" }
+            limits: { cpu: "1", memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chat-service
+  namespace: llm-observability
+  labels: { app: chat-service }
+spec:
+  selector: { app: chat-service }
+  ports:
+    - port: 8001
+      targetPort: 8001
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: chat-service
+  namespace: llm-observability
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: chat-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+    - type: Resource
+      resource:
+        name: memory
+        target: { type: Utilization, averageUtilization: 80 }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: chat-service
+  namespace: llm-observability
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: chat-service }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chat-service
+  namespace: llm-observability
+spec:
+  podSelector:
+    matchLabels: { app: chat-service }
+  policyTypes: [Ingress]
+  ingress:
+    # Allow the ingress controller and Prometheus to reach the service.
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: TCP, port: 8001 }

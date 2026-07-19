@@ -1,0 +1,30 @@
+[project]
+name = "llm-obs-shared"
+version = "0.1.0"
+description = "Shared schemas, config, logging and Kafka helpers for the LLM Observability platform"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-json-logger>=2.0.7",
+    "prometheus-client>=0.20",
+]
+
+[project.optional-dependencies]
+kafka = [
+    "aiokafka>=0.11",
+]
+db = [
+    "sqlalchemy[asyncio]>=2.0.30",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "greenlet>=3.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["llm_obs_shared*"]

@@ -1,0 +1,20 @@
+[project]
+name = "metrics-service"
+version = "0.1.0"
+description = "Read-only dashboard APIs aggregating inference telemetry from PostgreSQL"
+requires-python = ">=3.11"
+dependencies = [
+    "llm-obs-shared[db]",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

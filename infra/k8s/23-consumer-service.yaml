@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: consumer-service
+  namespace: llm-observability
+  labels: { app: consumer-service }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: consumer-service }
+  template:
+    metadata:
+      labels: { app: consumer-service }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8003"
+    spec:
+      containers:
+        - name: consumer-service
+          image: llm-obs/consumer-service:0.1.0
+          ports:
+            - containerPort: 8003
+          envFrom:
+            - configMapRef: { name: platform-config }
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: DATABASE_URL } }
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8003 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8003 }
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests: { cpu: "150m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: consumer-service
+  namespace: llm-observability
+  labels: { app: consumer-service }
+spec:
+  selector: { app: consumer-service }
+  ports:
+    - port: 8003
+      targetPort: 8003
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: consumer-service
+  namespace: llm-observability
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: consumer-service
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 75 }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: consumer-service
+  namespace: llm-observability
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: consumer-service }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: consumer-service
+  namespace: llm-observability
+spec:
+  podSelector:
+    matchLabels: { app: consumer-service }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: TCP, port: 8003 }

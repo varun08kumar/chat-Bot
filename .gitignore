@@ -8,10 +8,12 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+*.egg-info/
 
 # Env
 .env
 .env.*
+!.env.example
 
 # IDE
 .vscode/

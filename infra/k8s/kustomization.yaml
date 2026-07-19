@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Apply the whole platform with:
+#   kubectl apply -k infra/k8s
+namespace: llm-observability
+
+resources:
+  - 00-namespace.yaml
+  - 01-config.yaml
+  - 10-postgres.yaml
+  - 11-redis.yaml
+  - 12-kafka.yaml
+  - 20-migrate-job.yaml
+  - 21-chat-service.yaml
+  - 22-ingestion-service.yaml
+  - 23-consumer-service.yaml
+  - 24-metrics-service.yaml
+  - 25-frontend.yaml
+  - 30-ingress.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: llm-observability

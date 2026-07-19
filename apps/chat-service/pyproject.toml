@@ -1,0 +1,24 @@
+[project]
+name = "chat-service"
+version = "0.1.0"
+description = "Chat API with multi-provider LLM inference, SSE streaming and automatic observability"
+requires-python = ">=3.11"
+dependencies = [
+    "llm-obs-shared[db]",
+    "llm-obs-sdk",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "litellm>=1.40",
+    "redis>=5.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "sse-starlette>=2.1",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

@@ -1,0 +1,28 @@
+# Runs Alembic migrations to head before the app deployments serve traffic.
+# Uses the chat-service image (which ships the migrations).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  namespace: llm-observability
+  annotations:
+    # With Argo/Helm this would be a pre-install/pre-upgrade hook.
+    "app.kubernetes.io/component": migration
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels: { app: db-migrate }
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: llm-obs/chat-service:0.1.0
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: DATABASE_URL } }
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }

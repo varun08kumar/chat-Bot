@@ -1,0 +1,20 @@
+[project]
+name = "ingestion-service"
+version = "0.1.0"
+description = "Validates, redacts and normalises raw inference events into processed events"
+requires-python = ">=3.11"
+dependencies = [
+    "llm-obs-shared[kafka]",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

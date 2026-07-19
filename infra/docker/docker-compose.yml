@@ -1,0 +1,258 @@
+# One-command local stack for the LLM Observability platform.
+#
+#   docker compose -f infra/docker/docker-compose.yml up --build
+#
+# All images are version-pinned (no :latest). Services join the default network
+# and are reachable by service name. Health checks gate start-up ordering.
+
+name: llm-observability
+
+x-kafka-env: &kafka-env
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+
+x-app-common: &app-common
+  restart: unless-stopped
+  networks: [llmobs]
+
+services:
+  # ---------------------------------------------------------------- infra ---
+  postgres:
+    image: postgres:16.3
+    restart: unless-stopped
+    networks: [llmobs]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-llm_observability}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-llm_observability}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.2.5-alpine
+    restart: unless-stopped
+    networks: [llmobs]
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  kafka:
+    image: apache/kafka:3.7.0
+    restart: unless-stopped
+    networks: [llmobs]
+    ports:
+      - "9094:9094"
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+      # Single-broker cluster: internal topics must use RF=1 (the KRaft/Kafka
+      # default of 3 would leave __consumer_offsets stuck under-replicated,
+      # and consumer groups would never find a coordinator).
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  kafka-init:
+    image: apache/kafka:3.7.0
+    networks: [llmobs]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        for t in inference.logs processed.logs dead-letter; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+            --topic $$t --partitions 3 --replication-factor 1
+        done
+        echo "topics ready"
+    restart: "no"
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    restart: unless-stopped
+    networks: [llmobs]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+
+  # ------------------------------------------------------------- migration ---
+  migrate:
+    <<: *app-common
+    build:
+      context: ../..
+      dockerfile: apps/chat-service/Dockerfile
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-llm_observability}
+    command: ["alembic", "upgrade", "head"]
+
+  # -------------------------------------------------------------- services ---
+  chat-service:
+    <<: *app-common
+    build:
+      context: ../..
+      dockerfile: apps/chat-service/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *kafka-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-llm_observability}
+      REDIS_URL: redis://redis:6379/0
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-gpt-4o-mini}
+    ports:
+      - "8001:8001"
+
+  ingestion-service:
+    <<: *app-common
+    build:
+      context: ../..
+      dockerfile: apps/ingestion-service/Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      <<: *kafka-env
+    ports:
+      - "8002:8002"
+
+  consumer-service:
+    <<: *app-common
+    build:
+      context: ../..
+      dockerfile: apps/consumer-service/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *kafka-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-llm_observability}
+    ports:
+      - "8003:8003"
+
+  metrics-service:
+    <<: *app-common
+    build:
+      context: ../..
+      dockerfile: apps/metrics-service/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-llm_observability}
+    ports:
+      - "8004:8004"
+
+  frontend:
+    <<: *app-common
+    build:
+      context: ../../apps/frontend
+      dockerfile: Dockerfile
+    depends_on:
+      - chat-service
+      - metrics-service
+    ports:
+      - "3000:80"
+
+  # --------------------------------------------------------- observability ---
+  # Note: cAdvisor doesn't reliably reach the Docker daemon from inside a
+  # container on Docker Desktop for Mac (the daemon lives in Docker Desktop's
+  # own hidden VM), so per-container CPU/memory is exported instead by
+  # docker_stats_exporter.py, a small host-side script wrapping `docker
+  # stats`. Run it with `python3 infra/docker/docker_stats_exporter.py`
+  # (see docs/RUNBOOK.md). Prometheus scrapes it via host.docker.internal.
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    restart: unless-stopped
+    networks: [llmobs]
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    networks: [llmobs]
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Land straight on the LLM Overview dashboard instead of Grafana's
+      # generic welcome page.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/llm_overview.json
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+
+networks:
+  llmobs:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  kafka-data:
+  prometheus-data:
+  grafana-data:
