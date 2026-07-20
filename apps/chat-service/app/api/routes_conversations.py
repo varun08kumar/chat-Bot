@@ -10,7 +10,7 @@ from app.api.schemas import (
     DeleteResponse,
     MessageOut,
 )
-from app.dependencies import Identity, get_db, get_identity
+from app.dependencies import Identity, get_db, get_identity, verify_csrf
 from app.repositories.conversation_repository import (
     ConversationRepository,
     MessageRepository,
@@ -59,7 +59,7 @@ async def get_conversation(
         )
 
 
-@router.delete("/conversation/{conversation_id}", response_model=DeleteResponse)
+@router.delete("/conversation/{conversation_id}", response_model=DeleteResponse, dependencies=[Depends(verify_csrf)])
 async def delete_conversation(
     conversation_id: str,
     identity: Identity = Depends(get_identity),

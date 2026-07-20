@@ -1,9 +1,10 @@
-import { API_BASE, authHeaders } from "./api";
+import { API_BASE, readCookie, sessionId } from "./api";
 import type { TokenUsage } from "./types";
 
 export interface StreamHandlers {
   onStart?: (data: { conversation_id: string; request_id: string; model: string; provider: string }) => void;
   onToken?: (token: string) => void;
+  onToolCall?: (data: { name: string; query: string }) => void;
   onUsage?: (usage: TokenUsage) => void;
   onDone?: (data: { conversation_id: string; usage: TokenUsage }) => void;
   onError?: (message: string) => void;
@@ -30,7 +31,16 @@ export function streamChat(req: StreamRequest, handlers: StreamHandlers): () => 
     try {
       response = await fetch(`${API_BASE}/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...authHeaders() },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          "X-Session-Id": sessionId(),
+          // Double-submit CSRF (see dependencies.py:verify_csrf) — fetch()
+          // doesn't go through the axios interceptor that handles this for
+          // every other request, so it's set explicitly here too.
+          "X-CSRF-Token": readCookie("csrf_token") ?? "",
+        },
+        credentials: "include", // send the httpOnly session cookies
         body: JSON.stringify({ ...req, stream: true }),
         signal: controller.signal,
       });
@@ -95,6 +105,9 @@ function dispatchFrame(frame: string, handlers: StreamHandlers) {
       break;
     case "token":
       handlers.onToken?.(payload.content ?? "");
+      break;
+    case "tool_call":
+      handlers.onToolCall?.(payload);
       break;
     case "usage":
       handlers.onUsage?.(payload);

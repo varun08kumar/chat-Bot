@@ -15,6 +15,7 @@ from enum import Enum
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Float,
     ForeignKey,
     Index,
@@ -41,6 +42,23 @@ class ConversationStatus(str, Enum):
     ACTIVE = "active"
     ARCHIVED = "archived"
     DELETED = "deleted"
+
+
+class User(Base):
+    """A registered account. Not a foreign key target for `conversations`/
+    `messages`.`user_id` — those columns predate real auth and held
+    client-generated opaque ids; keeping them as plain strings (rather than
+    retrofitting a FK) means existing anonymous data is left alone rather
+    than migrated or deleted, and a real user's id (also an opaque uuid hex
+    string) slots into that same column unchanged going forward."""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(nullable=False, default=_utcnow, server_default=func.now())
 
 
 class Conversation(Base):

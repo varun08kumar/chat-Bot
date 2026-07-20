@@ -14,6 +14,10 @@ data:
   POSTGRES_PORT: "5432"
   POSTGRES_DB: "llm_observability"
   POSTGRES_USER: "postgres"
+  # No TLS on this local kind ingress (30-ingress.yaml disables ssl-redirect),
+  # so cookies must not be marked Secure or the browser would drop them.
+  # Flip to "true" once a real TLS-terminating ingress is in front of this.
+  COOKIE_SECURE: "false"
 ---
 # NOTE: This is an EXAMPLE secret with placeholder values for local clusters.
 # In production, provision it out-of-band (sealed-secrets / external-secrets /
@@ -32,3 +36,6 @@ stringData:
   ANTHROPIC_API_KEY: ""
   GROQ_API_KEY: ""
   GEMINI_API_KEY: ""
+  # Signs access/refresh JWTs - replace with a real random value before
+  # deploying anywhere beyond a local kind cluster.
+  JWT_SECRET: "changeme-local-kind-cluster-only"

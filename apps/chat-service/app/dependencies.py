@@ -7,16 +7,19 @@ they never construct their own database or Redis connections.
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from dataclasses import dataclass
 
-from fastapi import Depends, Header, Request
+from fastapi import Cookie, Depends, Header, HTTPException, Request, status
 from llm_obs_shared.db.session import Database
 from redis.asyncio import Redis
 
 from app.config import Settings, get_settings
+from app.services.auth import TokenError, verify_token
 from app.services.cache import ConversationCache, RateLimiter
 from app.services.chat_service import ChatService
+from app.services.job_queue import ChatJobQueue
 from app.services.llm_client import LLMClient
 
 
@@ -28,6 +31,7 @@ class AppContainer:
     cache: ConversationCache
     rate_limiter: RateLimiter
     llm: LLMClient
+    job_queue: ChatJobQueue
     chat_service: ChatService
 
     @classmethod
@@ -48,7 +52,10 @@ class AppContainer:
             enabled=settings.rate_limit_enabled,
         )
         llm = LLMClient(settings)
-        chat_service = ChatService(db=database, cache=cache, llm=llm, settings=settings)
+        job_queue = ChatJobQueue(redis, stream=settings.chat_job_stream, group=settings.chat_job_group)
+        chat_service = ChatService(
+            db=database, cache=cache, llm=llm, settings=settings, redis=redis, job_queue=job_queue
+        )
         return cls(
             settings=settings,
             database=database,
@@ -56,6 +63,7 @@ class AppContainer:
             cache=cache,
             rate_limiter=rate_limiter,
             llm=llm,
+            job_queue=job_queue,
             chat_service=chat_service,
         )
 
@@ -87,19 +95,49 @@ class Identity:
 
 
 def get_identity(
-    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
+    access_token: str | None = Cookie(default=None, alias="access_token"),
     x_session_id: str | None = Header(default=None, alias="X-Session-Id"),
+    settings: Settings = Depends(get_settings),
 ) -> Identity:
-    """Resolve caller identity from headers, with dev-friendly defaults.
+    """Resolve caller identity from the verified JWT access-token cookie.
 
-    In production these headers would be populated by an auth gateway; for the
-    assessment we accept them directly and fall back to a demo identity.
+    `user_id` now comes only from a token's `sub` claim, signed server-side
+    at login/refresh — this replaces an earlier version that trusted
+    whatever `X-User-Id` header the client happened to send, which let any
+    caller claim to be any user. `session_id` isn't a security boundary
+    (just a correlation label for the observability SDK, e.g. distinguishing
+    browser tabs of the same logged-in user), so it's still client-supplied.
     """
 
+    if access_token is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    try:
+        payload = verify_token(access_token, expected_type="access", settings=settings)
+    except TokenError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
     return Identity(
-        user_id=x_user_id or "demo-user",
+        user_id=payload.user_id,
         session_id=x_session_id or uuid.uuid4().hex,
     )
+
+
+def verify_csrf(
+    x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+    csrf_token: str | None = Cookie(default=None, alias="csrf_token"),
+) -> None:
+    """Double-submit CSRF check, required on every state-changing route.
+
+    httpOnly session cookies are attached by the browser to *any* site's
+    request to this origin — that's what makes CSRF possible even though
+    the cookies themselves can't be read or forged by an attacker's page.
+    `csrf_token` is deliberately NOT httpOnly, so only JavaScript actually
+    running on this origin can read it and echo it back as a header; a
+    cross-site form or script has no way to produce a matching value.
+    """
+
+    if not x_csrf_token or not csrf_token or not secrets.compare_digest(x_csrf_token, csrf_token):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF token missing or invalid")
 
 
 def settings_dep() -> Settings:

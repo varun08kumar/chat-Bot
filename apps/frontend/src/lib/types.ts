@@ -1,3 +1,10 @@
+export interface User {
+  id: string;
+  email: string;
+  is_admin: boolean;
+  created_at: string;
+}
+
 export type Role = "system" | "user" | "assistant";
 
 export interface Message {
@@ -43,7 +50,6 @@ export interface Summary {
   total_requests: number;
   total_errors: number;
   conversations: number;
-  users: number;
   avg_latency_ms: number;
   p95_latency_ms: number;
   p99_latency_ms: number;

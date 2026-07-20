@@ -125,6 +125,18 @@ services:
     command: ["alembic", "upgrade", "head"]
 
   # -------------------------------------------------------------- services ---
+  # Self-hosted metasearch (aggregates Google/Bing/DuckDuckGo/etc.) - gives
+  # the chatbot a `web_search` tool for current-events questions without any
+  # third-party search API key or account.
+  searxng:
+    image: searxng/searxng:2026.7.19-6da6eee26
+    restart: unless-stopped
+    networks: [llmobs]
+    volumes:
+      - ../searxng/settings.yml:/etc/searxng/settings.yml:ro
+    ports:
+      - "8090:8080"
+
   chat-service:
     <<: *app-common
     build:
@@ -139,6 +151,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      searxng:
+        condition: service_started
     environment:
       <<: *kafka-env
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-llm_observability}
@@ -149,6 +163,9 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       DEFAULT_MODEL: ${DEFAULT_MODEL:-gpt-4o-mini}
+      SEARXNG_URL: http://searxng:8080
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set — see .env.example}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
     ports:
       - "8001:8001"
 
@@ -195,6 +212,7 @@ services:
         condition: service_completed_successfully
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-llm_observability}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set — see .env.example}
     ports:
       - "8004:8004"
 

@@ -34,6 +34,8 @@ spec:
               valueFrom: { secretKeyRef: { name: platform-secrets, key: GROQ_API_KEY } }
             - name: GEMINI_API_KEY
               valueFrom: { secretKeyRef: { name: platform-secrets, key: GEMINI_API_KEY } }
+            - name: JWT_SECRET
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: JWT_SECRET } }
           readinessProbe:
             httpGet: { path: /health/ready, port: 8001 }
             initialDelaySeconds: 10

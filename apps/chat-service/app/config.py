@@ -41,8 +41,36 @@ class Settings(BaseServiceSettings):
     groq_api_key: str | None = None
     gemini_api_key: str | None = None
 
+    # Web search tool (self-hosted SearXNG - see infra/searxng).
+    searxng_url: str = "http://searxng:8080"
+    web_search_max_results: int = 5
+
+    # Auth (JWT access + refresh tokens, both set as httpOnly cookies).
+    # No default for the secret — a service that can forge/verify session
+    # tokens must not silently boot with a guessable one.
+    jwt_secret: str
+    jwt_algorithm: str = "HS256"
+    access_token_ttl_s: int = 180  # 3 minutes
+    refresh_token_ttl_s: int = 7 * 24 * 3600  # 7 days
+    # Cookies are Secure (HTTPS-only) outside local dev, where the stack is
+    # plain HTTP end to end.
+    cookie_secure: bool = False
+
     # Kafka (consumed from BaseServiceSettings + used to configure the SDK).
     inference_topic: str = "inference.logs"
+
+    # Chat job queue (Redis Streams). Decouples "accept the request" from
+    # "call the LLM provider": a request handler enqueues a job and relays
+    # events back over Redis Pub/Sub rather than calling the provider
+    # inline, so if the replica that accepted the request crashes
+    # mid-response, any surviving replica's worker reclaims the still-
+    # unacked job and finishes it — the reply gets computed and saved even
+    # though that specific HTTP connection is gone.
+    chat_job_stream: str = "chat:jobs"
+    chat_job_group: str = "chat-workers"
+    chat_job_claim_idle_ms: int = 30_000
+    chat_job_claim_interval_s: float = 10.0
+    chat_job_relay_timeout_s: float = 120.0
 
     @property
     def sync_database_url(self) -> str:

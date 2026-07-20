@@ -4,22 +4,16 @@ import type {
   ConversationDetail,
   Dashboard,
   ProviderInfo,
+  User,
 } from "./types";
 
 // Base path mirrors the ingress: /api -> chat-service, /api/metrics -> metrics.
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
 
-// A stable per-browser identity so conversations belong to "this user".
-function userId(): string {
-  const key = "llmobs.user_id";
-  let id = localStorage.getItem(key);
-  if (!id) {
-    id = crypto.randomUUID();
-    localStorage.setItem(key, id);
-  }
-  return id;
-}
-
+// A per-session correlation label only — not a security boundary. Real
+// identity (`user_id`) comes from the verified access-token cookie the
+// backend sets at login; this just distinguishes browser tabs of the same
+// logged-in user for observability.
 export function sessionId(): string {
   const key = "llmobs.session_id";
   let id = sessionStorage.getItem(key);
@@ -30,14 +24,30 @@ export function sessionId(): string {
   return id;
 }
 
-export function authHeaders(): Record<string, string> {
-  return { "X-User-Id": userId(), "X-Session-Id": sessionId() };
+function readCookie(name: string): string | null {
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
 }
 
-const client = axios.create({ baseURL: API_BASE, headers: { "Content-Type": "application/json" } });
+const MUTATING_METHODS = new Set(["post", "put", "patch", "delete"]);
+
+const client = axios.create({
+  baseURL: API_BASE,
+  headers: { "Content-Type": "application/json" },
+  // Send the httpOnly session cookies with every request; without this,
+  // the browser omits cookies on cross-origin-looking requests even though
+  // frontend and backend share an origin behind nginx in this setup.
+  withCredentials: true,
+});
 client.interceptors.request.use((config) => {
-  config.headers.set?.("X-User-Id", userId());
   config.headers.set?.("X-Session-Id", sessionId());
+  // Double-submit CSRF: the backend rejects any mutating request whose
+  // X-CSRF-Token header doesn't match the (non-httpOnly) csrf_token cookie
+  // — see apps/chat-service/app/dependencies.py:verify_csrf.
+  if (config.method && MUTATING_METHODS.has(config.method)) {
+    const csrf = readCookie("csrf_token");
+    if (csrf) config.headers.set?.("X-CSRF-Token", csrf);
+  }
   return config;
 });
 
@@ -63,6 +73,26 @@ export const api = {
     const { data } = await client.get<Dashboard>("/metrics/dashboard", { params: { window } });
     return data;
   },
+
+  async register(email: string, password: string): Promise<User> {
+    const { data } = await client.post<User>("/auth/register", { email, password });
+    return data;
+  },
+  async login(email: string, password: string): Promise<User> {
+    const { data } = await client.post<User>("/auth/login", { email, password });
+    return data;
+  },
+  async logout(): Promise<void> {
+    await client.post("/auth/logout");
+  },
+  async refresh(): Promise<User> {
+    const { data } = await client.post<User>("/auth/refresh");
+    return data;
+  },
+  async me(): Promise<User> {
+    const { data } = await client.get<User>("/auth/me");
+    return data;
+  },
 };
 
-export { API_BASE };
+export { API_BASE, readCookie };
