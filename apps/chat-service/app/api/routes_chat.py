@@ -19,6 +19,7 @@ from app.dependencies import (
     get_chat_service,
     get_identity,
     get_rate_limiter,
+    verify_csrf,
 )
 from app.services.chat_service import ChatService, ConversationNotFound
 from app.services.llm_client import LLMError
@@ -38,7 +39,7 @@ async def _enforce_rate_limit(limiter: RateLimiter, identity: Identity) -> None:
         )
 
 
-@router.post("/chat")
+@router.post("/chat", dependencies=[Depends(verify_csrf)])
 async def chat(
     payload: ChatRequest,
     request: Request,
@@ -79,14 +80,19 @@ async def chat(
         )
 
     async def event_generator():
-        # Stop generating if the client disconnects (cancel button / navigation).
-        async for event in service.stream(
+        # The actual completion now runs in a background worker (see
+        # ChatService.stream_via_queue), not inline in this request, so a
+        # disconnect here can't rely on GeneratorExit to stop it — instead
+        # explicitly flag the job cancelled so the worker stops consuming
+        # tokens for it on its next check.
+        async for event in service.stream_via_queue(
             prepared, user_id=identity.user_id, session_id=identity.session_id
         ):
             if await request.is_disconnected():
                 logger.info("Client disconnected; cancelling stream", extra={
                     "conversation_id": prepared.conversation_id,
                 })
+                await service.request_cancel(prepared.request_id)
                 break
             yield {"event": event["event"], "data": json.dumps(event["data"])}
 

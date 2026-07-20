@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -11,9 +13,10 @@ from llm_obs_shared.fastapi_obs import install_observability
 from llm_obs_shared.logging import configure_logging, get_logger
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.api import routes_chat, routes_conversations
+from app.api import routes_auth, routes_chat, routes_conversations
 from app.config import get_settings
 from app.dependencies import AppContainer
+from app.services.chat_worker import run_worker
 
 logger = get_logger(__name__)
 
@@ -47,10 +50,25 @@ async def lifespan(app: FastAPI):
 
     container = AppContainer.build(settings)
     app.state.container = container
+
+    worker_stop = asyncio.Event()
+    worker_task = asyncio.create_task(
+        run_worker(
+            chat_service=container.chat_service,
+            job_queue=container.job_queue,
+            settings=settings,
+            stop=worker_stop,
+        )
+    )
+
     logger.info("chat-service started", extra={"environment": settings.environment})
     try:
         yield
     finally:
+        worker_stop.set()
+        worker_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker_task
         await container.aclose()
         await shutdown_sdk()
         logger.info("chat-service stopped")
@@ -90,6 +108,7 @@ def create_app() -> FastAPI:
         readiness_checks={"database": _db_ready, "redis": _redis_ready},
     )
 
+    app.include_router(routes_auth.router)
     app.include_router(routes_chat.router)
     app.include_router(routes_conversations.router)
     return app
