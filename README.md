@@ -67,13 +67,13 @@ start without them:
 
 3. **Change `POSTGRES_PASSWORD` and `GRAFANA_PASSWORD`** away from the
    `.env.example` defaults (`postgres` / `admin`) before this stack is
-   reachable by anyone but you — `.env.example` itself is committed and
+   reachable by anyone but you - `.env.example` itself is committed and
    pushed, so those defaults are effectively public. Anything else you'd
    normally treat as a real credential (a shared/hosted deployment, a demo
    someone else can reach) needs its own unique value here too.
 
    > **If the stack is already running** with the old defaults, changing
-   > `.env` alone does nothing — Postgres and Grafana both only apply
+   > `.env` alone does nothing - Postgres and Grafana both only apply
    > `POSTGRES_PASSWORD`/`GF_SECURITY_ADMIN_PASSWORD` on their *first* boot
    > against a fresh data volume; an existing volume keeps the old password
    > regardless of what the env var says on restart. Update the running
