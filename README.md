@@ -32,11 +32,14 @@ Kafka to PostgreSQL — without ever blocking the user request.
                                                         (scrapes every service)
 ```
 
-See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the deep dive,
-**[docs/API.md](docs/API.md)** for endpoint reference,
-**[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md)** for a screen-by-screen tour with
-screenshots, and **[docs/LOAD_TESTING.md](docs/LOAD_TESTING.md)** for
-load-testing methodology, results, and the Kubernetes autoscaling demo.
+See **[docs/SYSTEM_DOCUMENTATION.html](docs/SYSTEM_DOCUMENTATION.html)** for a
+full screen-by-screen tour with live screenshots plus architecture/sequence
+diagrams (open it directly in a browser — self-contained, no server needed),
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the telemetry-pipeline
+deep dive, **[docs/API.md](docs/API.md)** for endpoint reference,
+**[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md)** for an earlier screen tour, and
+**[docs/LOAD_TESTING.md](docs/LOAD_TESTING.md)** for load-testing methodology,
+results, and the Kubernetes autoscaling demo.
 
 ---
 
@@ -44,7 +47,27 @@ load-testing methodology, results, and the Kubernetes autoscaling demo.
 
 ```bash
 git clone <repo> && cd llm-observability
-cp .env.example .env            # add at least one provider API key
+cp .env.example .env
+```
+
+Then edit `.env` and fill in two things — **both required**, the stack won't
+start without them:
+
+1. **At least one LLM provider key** — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+   `GROQ_API_KEY`, or `GEMINI_API_KEY`. If you set `DEFAULT_MODEL` to a model
+   from a different provider than your key, override it to match.
+2. **`JWT_SECRET`** — signs the login session tokens. Generate a real one:
+   ```bash
+   python3 -c "import secrets; print(secrets.token_hex(32))"
+   ```
+   Paste the output as `JWT_SECRET=...`. Don't leave it blank or reuse this
+   README's example — `chat-service` and `metrics-service` both refuse to
+   boot without it (`docker compose` fails fast with a clear error instead of
+   starting half-configured).
+
+Then bring the stack up:
+
+```bash
 docker compose -f infra/docker/docker-compose.yml up --build
 # or, equivalently, with health-check polling and a summary of URLs:
 python3 scripts/dev_up.py
@@ -55,19 +78,24 @@ PostgreSQL, Redis, Prometheus and Grafana. Database migrations run
 automatically via the `migrate` job, and Kafka topics are created by
 `kafka-init`.
 
-| Surface            | URL                                  |
-|--------------------|--------------------------------------|
-| Chat UI            | http://localhost:3000                |
-| Dashboard          | http://localhost:3000/dashboard      |
-| Chat API (OpenAPI) | http://localhost:8001/docs           |
-| Metrics API        | http://localhost:8004/docs           |
-| Kafka UI           | http://localhost:8080                |
-| Prometheus         | http://localhost:9090                |
-| Grafana            | http://localhost:3001 (admin/admin)  |
+Open **http://localhost:3000**, click **Sign up** to create an account (self-
+service, no invite needed), and start chatting.
 
-> Without an `OPENAI_API_KEY` the UI still loads; chat calls will return a
+| Surface              | URL                                  |
+|-----------------------|--------------------------------------|
+| Chat UI               | http://localhost:3000                |
+| Log in / Sign up      | http://localhost:3000/login · /register |
+| Dashboard (your usage)| http://localhost:3000/dashboard      |
+| Chat API (OpenAPI)    | http://localhost:8001/docs           |
+| Metrics API           | http://localhost:8004/docs           |
+| Kafka UI              | http://localhost:8080                |
+| Prometheus            | http://localhost:9090                |
+| Grafana (all-users)   | http://localhost:3001 (admin/admin)  |
+
+> Without a provider key the UI still loads; chat calls will return a
 > provider error which is itself logged through the pipeline (failures are
-> first-class telemetry).
+> first-class telemetry). Without `JWT_SECRET` set, the stack won't start at
+> all — see above.
 
 ---
 
@@ -137,12 +165,36 @@ npm run dev        # http://localhost:5173, proxies /api to the services
 
 ---
 
+## Authentication
+
+Self-signup accounts (register → immediately logged in, no invite/approval
+step). Two JWTs, both set as `httpOnly` cookies so they're never readable by
+JavaScript: a short-lived **access token** (3 min) sent on every request, and
+a long-lived **refresh token** (7 days) the frontend silently exchanges for a
+fresh pair every 2 minutes in the background. A third, non-`httpOnly` CSRF
+cookie is echoed back as a header on mutating requests (double-submit
+pattern) — `httpOnly` alone doesn't stop CSRF, since the browser attaches
+cookies to *any* site's request to this origin.
+
+Two dashboards exist because two different questions need answering:
+
+| | Scope | Access |
+|---|---|---|
+| **In-app `/dashboard`** | Your own usage only — `metrics-service` filters every query by the caller's JWT `user_id` | Any logged-in account, their own data only |
+| **Grafana "Per-User Usage"** | Every account's usage, filterable by user | Grafana's own separate admin login (`admin`/`admin`) — not reachable via any product account |
+
+---
+
 ## Observability
 
 - **Prometheus** scrapes `/metrics` on every service (HTTP, LLM, Kafka, DB and
-  DLQ metrics — see `packages/shared/llm_obs_shared/metrics.py`).
-- **Grafana** auto-provisions four dashboards (LLM Overview, Kafka Pipeline,
-  Database, Application) from `infra/grafana/dashboards/`.
+  DLQ metrics — see `packages/shared/llm_obs_shared/metrics.py`) plus
+  `kube-state-metrics` for cluster-level pod/deployment/node state.
+- **Grafana** auto-provisions eight dashboards from `infra/grafana/dashboards/`:
+  LLM Overview, Kafka Pipeline, Database, Application, Container Resources,
+  Kubernetes Autoscaling (chat-service HPA), Cluster Overview (every
+  deployment in the namespace), and Per-User Usage (raw SQL against Postgres,
+  not Prometheus — a per-user metric label would be unbounded cardinality).
 - **Structured JSON logs** with correlation IDs propagate across every hop via
   the `X-Correlation-ID` header.
 
@@ -157,6 +209,7 @@ npm run dev        # http://localhost:5173, proxies /api to the services
 | DB write fails        | Retried with exponential backoff; batch DLQ'd after the limit   |
 | Consumer crash        | Resumes from the last committed offset; inserts are idempotent   |
 | LLM timeout/error     | Graceful error to the user **and** still logged as a failure     |
+| chat-service crash mid-response | The completion request is queued (Redis Streams), not called inline; any surviving replica reclaims and finishes the still-unacked job — verified by SIGKILL-ing a running container mid-stream and watching another replica pick it up |
 
 ---
 
@@ -295,5 +348,5 @@ infra/
   prometheus/          scrape config
   grafana/             datasource + dashboard provisioning
 load-tests/            k6 scripts
-docs/                  architecture & API reference
+docs/                  architecture, API reference & SYSTEM_DOCUMENTATION.html
 ```
