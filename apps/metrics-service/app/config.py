@@ -19,6 +19,12 @@ class Settings(BaseServiceSettings):
     db_pool_size: int = 5
     db_max_overflow: int = 10
 
+    # Verify-only: the dashboard is scoped to the requesting user, so this
+    # service needs to read (not issue) the same access-token cookie
+    # chat-service sets — see app/services/auth.py.
+    jwt_secret: str
+    jwt_algorithm: str = "HS256"
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useDashboard } from "@/hooks/useDashboard";
 import { ErrorChart, LatencyChart, ThroughputChart } from "@/components/Charts";
 import type { ModelRow, ProviderRow } from "@/lib/types";
@@ -13,7 +14,17 @@ export function DashboardPage() {
     <div className="scroll-thin h-full overflow-y-auto p-4">
       <div className="mx-auto max-w-6xl space-y-4">
         <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold">LLM Overview</h1>
+          <div className="flex items-center gap-3">
+            <Link
+              to="/"
+              className="flex items-center gap-1.5 text-sm text-slate-500 transition hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
+            >
+              <BackIcon />
+              Back to chat
+            </Link>
+            <span className="text-slate-300 dark:text-slate-700">/</span>
+            <h1 className="text-xl font-semibold">LLM Overview</h1>
+          </div>
           <div className="flex gap-1">
             {WINDOWS.map((w) => (
               <button
@@ -65,6 +76,14 @@ export function DashboardPage() {
         )}
       </div>
     </div>
+  );
+}
+
+function BackIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M19 12H5M12 19l-7-7 7-7" />
+    </svg>
   );
 }
 

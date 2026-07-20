@@ -10,3 +10,24 @@ datasources:
     editable: true
     jsonData:
       timeInterval: 10s
+
+  # Per-account API usage (which provider/model each user hit, token
+  # counts) isn't something Prometheus can answer well — that would mean
+  # a `user_id` label on every metric, and with real users that's
+  # unbounded cardinality. That data already lives in Postgres
+  # (`inference_logs.user_id`, populated by consumer-service) and is
+  # queried directly for the "Per-User Usage" dashboard instead.
+  - name: Postgres
+    uid: postgres
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: llm_observability
+    user: postgres
+    editable: true
+    secureJsonData:
+      password: postgres
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false

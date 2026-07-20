@@ -19,7 +19,7 @@ export function ChatPage() {
   const { data: detail } = useConversation(conversationId);
   const initialMessages = useMemo(() => detail?.messages ?? EMPTY, [detail]);
 
-  const { messages, streaming, usage, latencyMs, error, send, cancel } = useChat(
+  const { messages, streaming, usage, latencyMs, error, toolStatus, send, cancel } = useChat(
     conversationId,
     initialMessages,
     (id) => navigate(`/c/${id}`),
@@ -42,12 +42,14 @@ export function ChatPage() {
               {detail?.title ?? "New conversation"}
             </h1>
           </div>
-          <span className="shrink-0 font-mono text-[0.68rem] tracking-wide text-zinc-400 dark:text-zinc-500">
-            CHAT BOT · V1
-          </span>
         </div>
 
-        <MessageList messages={messages} streaming={streaming} onSuggestion={(text) => send(text, model)} />
+        <MessageList
+          messages={messages}
+          streaming={streaming}
+          toolStatus={toolStatus}
+          onSuggestion={(text) => send(text, model)}
+        />
 
         {error && (
           <div className="mx-auto w-full max-w-3xl px-4 py-1 text-sm text-red-500">⚠ {error}</div>

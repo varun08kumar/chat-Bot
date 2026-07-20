@@ -25,6 +25,8 @@ spec:
           env:
             - name: DATABASE_URL
               valueFrom: { secretKeyRef: { name: platform-secrets, key: DATABASE_URL } }
+            - name: JWT_SECRET
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: JWT_SECRET } }
           readinessProbe:
             httpGet: { path: /health/ready, port: 8004 }
             initialDelaySeconds: 10

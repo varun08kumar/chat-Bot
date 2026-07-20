@@ -1,0 +1,134 @@
+{
+  "uid": "llmobs-user-usage",
+  "title": "Per-User Usage",
+  "description": "Which registered account used how much of which provider/model. Backed directly by Postgres (inference_logs joined to users) rather than Prometheus, since per-user labels on scraped metrics would be unbounded cardinality. Scoped to registered accounts only — pre-auth anonymous sessions have no user row and are intentionally excluded.",
+  "tags": ["llm-observability", "auth"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "annotations": { "list": [] },
+  "templating": {
+    "list": [
+      {
+        "name": "user",
+        "label": "User",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "postgres" },
+        "query": "SELECT email FROM users ORDER BY email",
+        "refresh": 1,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": ["All"], "value": ["$__all"] }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Registered Users",
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "fieldConfig": { "defaults": { "decimals": 0 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "format": "table",
+          "rawSql": "SELECT COUNT(*) AS value FROM users",
+          "refId": "A"
+        }
+      ],
+      "id": 1
+    },
+    {
+      "type": "stat",
+      "title": "Requests (selected range)",
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "fieldConfig": { "defaults": { "decimals": 0 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "format": "table",
+          "rawSql": "SELECT COUNT(*) AS value FROM inference_logs il JOIN users u ON u.id = il.user_id WHERE $__timeFilter(il.timestamp)",
+          "refId": "A"
+        }
+      ],
+      "id": 2
+    },
+    {
+      "type": "stat",
+      "title": "Tokens (selected range)",
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "fieldConfig": { "defaults": { "decimals": 0 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "format": "table",
+          "rawSql": "SELECT COALESCE(SUM(il.total_tokens),0) AS value FROM inference_logs il JOIN users u ON u.id = il.user_id WHERE $__timeFilter(il.timestamp)",
+          "refId": "A"
+        }
+      ],
+      "id": 3
+    },
+    {
+      "type": "stat",
+      "title": "Active Users (selected range)",
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "fieldConfig": { "defaults": { "decimals": 0 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "format": "table",
+          "rawSql": "SELECT COUNT(DISTINCT il.user_id) AS value FROM inference_logs il JOIN users u ON u.id = il.user_id WHERE $__timeFilter(il.timestamp)",
+          "refId": "A"
+        }
+      ],
+      "id": 4
+    },
+    {
+      "type": "table",
+      "title": "Usage by User",
+      "description": "Every registered account, including ones with zero requests in the selected range. Ignores the User picker above so the full roster is always visible.",
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "gridPos": { "x": 0, "y": 4, "w": 24, "h": 9 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "Requests", "desc": true }] },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "format": "table",
+          "rawSql": "SELECT\n  u.email AS \"User\",\n  COUNT(il.*) AS \"Requests\",\n  COALESCE(SUM(il.total_tokens), 0) AS \"Total Tokens\",\n  COALESCE(SUM(il.prompt_tokens), 0) AS \"Prompt Tokens\",\n  COALESCE(SUM(il.completion_tokens), 0) AS \"Completion Tokens\",\n  ROUND(COALESCE(AVG(il.latency_ms), 0)::numeric, 1) AS \"Avg Latency (ms)\",\n  ROUND(100.0 * COUNT(*) FILTER (WHERE il.status <> 'success') / NULLIF(COUNT(il.*), 0), 1) AS \"Error Rate (%)\",\n  COUNT(DISTINCT il.provider) AS \"Providers Used\",\n  MAX(il.timestamp) AS \"Last Active\"\nFROM users u\nLEFT JOIN inference_logs il\n  ON il.user_id = u.id AND $__timeFilter(il.timestamp)\nGROUP BY u.email\nORDER BY \"Requests\" DESC",
+          "refId": "A"
+        }
+      ],
+      "id": 5
+    },
+    {
+      "type": "table",
+      "title": "Provider / Model Breakdown (selected user)",
+      "description": "Filtered by the User picker above — pick one or more accounts to see exactly which provider and model they used.",
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "gridPos": { "x": 0, "y": 13, "w": 24, "h": 9 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "Requests", "desc": true }] },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "format": "table",
+          "rawSql": "SELECT\n  u.email AS \"User\",\n  il.provider AS \"Provider\",\n  il.model AS \"Model\",\n  COUNT(*) AS \"Requests\",\n  COALESCE(SUM(il.total_tokens), 0) AS \"Total Tokens\",\n  ROUND(AVG(il.latency_ms)::numeric, 1) AS \"Avg Latency (ms)\",\n  ROUND(100.0 * COUNT(*) FILTER (WHERE il.status <> 'success') / COUNT(*), 1) AS \"Error Rate (%)\"\nFROM inference_logs il\nJOIN users u ON u.id = il.user_id\nWHERE $__timeFilter(il.timestamp)\n  AND u.email IN (${user:sqlstring})\nGROUP BY u.email, il.provider, il.model\nORDER BY \"Requests\" DESC",
+          "refId": "A"
+        }
+      ],
+      "id": 6
+    }
+  ]
+}
