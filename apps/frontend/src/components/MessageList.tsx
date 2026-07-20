@@ -48,17 +48,23 @@ const SUGGESTIONS = [
   "Summarize an argument",
 ];
 
+interface ToolStatus {
+  name: string;
+  query: string;
+}
+
 interface Props {
   messages: Message[];
   streaming: boolean;
+  toolStatus: ToolStatus | null;
   onSuggestion: (text: string) => void;
 }
 
-export function MessageList({ messages, streaming, onSuggestion }: Props) {
+export function MessageList({ messages, streaming, toolStatus, onSuggestion }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streaming]);
+  }, [messages, streaming, toolStatus]);
 
   const visible = messages.filter((m) => m.role !== "system");
 
@@ -83,6 +89,7 @@ export function MessageList({ messages, streaming, onSuggestion }: Props) {
             key={m.id}
             message={m}
             streaming={streaming && i === visible.length - 1 && m.role === "assistant"}
+            toolStatus={streaming && i === visible.length - 1 && m.role === "assistant" ? toolStatus : null}
           />
         ))}
         <div ref={bottomRef} />
@@ -91,7 +98,7 @@ export function MessageList({ messages, streaming, onSuggestion }: Props) {
   );
 }
 
-function Bubble({ message, streaming }: { message: Message; streaming: boolean }) {
+function Bubble({ message, streaming, toolStatus }: { message: Message; streaming: boolean; toolStatus: ToolStatus | null }) {
   const isUser = message.role === "user";
   const empty = message.content.length === 0;
   return (
@@ -101,10 +108,34 @@ function Bubble({ message, streaming }: { message: Message; streaming: boolean }
           isUser
             ? "whitespace-pre-wrap bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-50"
             : "text-zinc-800 dark:text-zinc-100"
-        } ${streaming && empty ? "cursor-blink" : ""}`}
+        }`}
       >
-        {isUser ? message.content : <ReactMarkdown components={markdownComponents}>{message.content}</ReactMarkdown>}
-        {streaming && !empty && <span className="cursor-blink" />}
+        {streaming && toolStatus ? (
+          <span className="flex items-center gap-2 text-zinc-500 dark:text-zinc-400">
+            <span className="typing-dots">
+              <span />
+              <span />
+              <span />
+            </span>
+            Searching the web for "{toolStatus.query}"…
+          </span>
+        ) : streaming && empty ? (
+          // Nothing has arrived yet — show a "thinking" indicator. Once
+          // tokens start landing, the growing text itself (plus the
+          // typewriter reveal) is the "still generating" signal; a glued-on
+          // trailing cursor can't sit inline with markdown's block-level
+          // output (headings, list items, code fences) without landing on
+          // its own line, so we don't try.
+          <span className="typing-dots">
+            <span />
+            <span />
+            <span />
+          </span>
+        ) : isUser ? (
+          message.content
+        ) : (
+          <ReactMarkdown components={markdownComponents}>{message.content}</ReactMarkdown>
+        )}
       </div>
     </div>
   );

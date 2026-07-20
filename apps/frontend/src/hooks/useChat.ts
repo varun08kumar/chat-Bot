@@ -9,6 +9,7 @@ export interface ChatState {
   usage: TokenUsage | null;
   latencyMs: number | null;
   error: string | null;
+  toolStatus: { name: string; query: string } | null;
 }
 
 let localCounter = 0;
@@ -35,6 +36,7 @@ export function useChat(
   const [usage, setUsage] = useState<TokenUsage | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [toolStatus, setToolStatus] = useState<{ name: string; query: string } | null>(null);
   const cancelRef = useRef<(() => void) | null>(null);
   const startRef = useRef<number>(0);
 
@@ -46,6 +48,9 @@ export function useChat(
   const pendingRef = useRef("");
   const networkDoneRef = useRef(false);
   const typingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Mirrors `toolStatus` for the onToken closure below — avoids a stale
+  // read of state from inside a callback created once per `send()` call.
+  const toolStatusRef = useRef<{ name: string; query: string } | null>(null);
 
   const appendToLastAssistant = useCallback((text: string) => {
     if (!text) return;
@@ -90,14 +95,29 @@ export function useChat(
     }, TYPING_TICK_MS);
   }, [appendToLastAssistant, maybeFinish]);
 
-  // Reset local state when the selected conversation changes — but never while
-  // a stream is actively populating `messages` ourselves. Sending a message on
-  // a brand-new chat navigates to the newly-created conversation id (changing
-  // the `conversationId` prop) and the "GET conversation" query can resolve
-  // mid-stream (changing `initialMessages`) — either would otherwise wipe the
-  // in-flight optimistic messages and silently drop every subsequent token.
+  // The conversation id our local state currently takes precedence over a
+  // background refetch for. Set whenever we start (or just finished) sending
+  // into a conversation; cleared the moment the user navigates to a
+  // different one. Guards two races, both against `initialMessages`:
+  //  1. Mid-stream: sending on a brand-new chat navigates to the newly
+  //     created id, and the "GET conversation" query can resolve while
+  //     tokens are still arriving.
+  //  2. Just-finished: that same query can also resolve *after* streaming
+  //     already flipped to false (a slow request, or the stream ending very
+  //     quickly on an error) — for a brand-new conversation this snapshot is
+  //     often incomplete (e.g. the assistant turn isn't persisted at all if
+  //     the call failed before any tokens arrived), and without this guard
+  //     it would silently wipe the error message and the empty assistant
+  //     bubble the user just saw, leaving the screen looking like nothing
+  //     happened at all.
+  // Either way, once this ref matches `conversationId`, `initialMessages`
+  // updates for that same id are ignored until the user navigates away.
+  const trustLocalForRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (streaming) return;
+    if (conversationId !== null && conversationId === trustLocalForRef.current) return;
+    trustLocalForRef.current = null;
     setMessages(initialMessages);
     setUsage(null);
     setLatencyMs(null);
@@ -111,8 +131,11 @@ export function useChat(
       setError(null);
       setUsage(null);
       setLatencyMs(null);
+      setToolStatus(null);
+      toolStatusRef.current = null;
       pendingRef.current = "";
       networkDoneRef.current = false;
+      if (conversationId) trustLocalForRef.current = conversationId;
 
       const userMsg: Message = { id: localId(), role: "user", content: text, created_at: new Date().toISOString() };
       const assistantMsg: Message = { id: localId(), role: "assistant", content: "", created_at: new Date().toISOString() };
@@ -124,11 +147,19 @@ export function useChat(
         { message: text, conversation_id: conversationId, model },
         {
           onStart: (data) => {
-            if (!conversationId) onConversationCreated(data.conversation_id);
+            if (!conversationId) {
+              trustLocalForRef.current = data.conversation_id;
+              onConversationCreated(data.conversation_id);
+            }
           },
           onToken: (token) => {
+            if (toolStatusRef.current) setToolStatus(null);
             pendingRef.current += token;
             ensureTypingLoop();
+          },
+          onToolCall: (data) => {
+            toolStatusRef.current = data;
+            setToolStatus(data);
           },
           onUsage: (u) => setUsage(u),
           onDone: () => {
@@ -141,6 +172,8 @@ export function useChat(
             stopTypingLoop();
             pendingRef.current = "";
             networkDoneRef.current = true;
+            toolStatusRef.current = null;
+            setToolStatus(null);
             setError(message);
             setStreaming(false);
             cancelRef.current = null;
@@ -160,6 +193,8 @@ export function useChat(
     appendToLastAssistant(pendingRef.current);
     pendingRef.current = "";
     networkDoneRef.current = true;
+    toolStatusRef.current = null;
+    setToolStatus(null);
     setStreaming(false);
     setLatencyMs(performance.now() - startRef.current);
   }, [stopTypingLoop, appendToLastAssistant]);
@@ -170,7 +205,7 @@ export function useChat(
     stopTypingLoop();
   }, [stopTypingLoop]);
 
-  return { messages, streaming, usage, latencyMs, error, send, cancel } as ChatState & {
+  return { messages, streaming, usage, latencyMs, error, toolStatus, send, cancel } as ChatState & {
     send: (text: string, model: string | null) => void;
     cancel: () => void;
   };

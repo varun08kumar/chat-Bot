@@ -1,0 +1,14 @@
+# Minimal override merged onto SearXNG's baked-in defaults
+# (use_default_settings: true). Only JSON output needs enabling — it's off
+# by default to discourage anonymous scraping; we're the only client on the
+# compose network, so that's not a concern here.
+use_default_settings: true
+
+server:
+  secret_key: "4850cc4393d403d17fd06b3cb07fbb710a43fe9279b99943d1aa75087fbcff09"
+  limiter: false
+
+search:
+  formats:
+    - html
+    - json

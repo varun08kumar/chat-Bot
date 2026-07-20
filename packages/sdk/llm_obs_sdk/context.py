@@ -62,11 +62,20 @@ def observation_context(
         endpoint_var.set(endpoint),
         request_id_var.set(request_id),
     ]
+    variables = [session_id_var, conversation_id_var, user_id_var, endpoint_var, request_id_var]
     try:
         yield
     finally:
-        session_id_var.reset(tokens[0])
-        conversation_id_var.reset(tokens[1])
-        user_id_var.reset(tokens[2])
-        endpoint_var.reset(tokens[3])
-        request_id_var.reset(tokens[4])
+        # When this wraps an async generator (as chat streaming does), a
+        # client disconnect delivers GeneratorExit from whatever asyncio
+        # Context happens to be current at cancellation time — not
+        # necessarily the one `.set()` ran in above. `.reset()` then raises
+        # ValueError ("created in a different Context"). The Context this
+        # was bound to is being torn down either way, so there's nothing to
+        # leak by skipping a reset that can't apply — just swallow it rather
+        # than let it surface as an unretrieved task exception.
+        for var, token in zip(variables, tokens):
+            try:
+                var.reset(token)
+            except ValueError:
+                pass
