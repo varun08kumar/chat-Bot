@@ -56,13 +56,14 @@ async def _process(chat_service: ChatService, job_queue: ChatJobQueue, entry: Jo
     prepared = PreparedChat(
         conversation_id=job["conversation_id"],
         request_id=job["request_id"],
+        user_message_id=job["user_message_id"],
         model=job["model"],
         provider=job["provider"],
         messages=job["messages"],
         is_new=False,
     )
     try:
-        await chat_service.run_and_publish(prepared, user_id=job["user_id"], session_id=job["session_id"])
+        await chat_service.recover_or_run(prepared, user_id=job["user_id"], session_id=job["session_id"])
     except Exception:  # noqa: BLE001 - a poison-pill job must not wedge the queue forever
         logger.exception("Chat job failed", extra={"request_id": job.get("request_id")})
     finally:

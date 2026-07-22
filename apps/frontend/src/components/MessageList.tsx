@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Message } from "@/lib/types";
 import type { Components } from "react-markdown";
@@ -58,9 +58,11 @@ interface Props {
   streaming: boolean;
   toolStatus: ToolStatus | null;
   onSuggestion: (text: string) => void;
+  onEdit: (messageId: string, text: string) => void;
+  onContinue: () => void;
 }
 
-export function MessageList({ messages, streaming, toolStatus, onSuggestion }: Props) {
+export function MessageList({ messages, streaming, toolStatus, onSuggestion, onEdit, onContinue }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -84,25 +86,113 @@ export function MessageList({ messages, streaming, toolStatus, onSuggestion }: P
             ))}
           </div>
         )}
-        {visible.map((m, i) => (
-          <Bubble
-            key={m.id}
-            message={m}
-            streaming={streaming && i === visible.length - 1 && m.role === "assistant"}
-            toolStatus={streaming && i === visible.length - 1 && m.role === "assistant" ? toolStatus : null}
-          />
-        ))}
+        {visible.map((m, i) => {
+          const isLast = i === visible.length - 1;
+          return (
+            <Bubble
+              key={m.id}
+              message={m}
+              streaming={streaming && isLast && m.role === "assistant"}
+              toolStatus={streaming && isLast && m.role === "assistant" ? toolStatus : null}
+              isLast={isLast}
+              busy={streaming}
+              onEdit={onEdit}
+              onContinue={onContinue}
+            />
+          );
+        })}
         <div ref={bottomRef} />
       </div>
     </div>
   );
 }
 
-function Bubble({ message, streaming, toolStatus }: { message: Message; streaming: boolean; toolStatus: ToolStatus | null }) {
+interface BubbleProps {
+  message: Message;
+  streaming: boolean;
+  toolStatus: ToolStatus | null;
+  isLast: boolean;
+  busy: boolean;
+  onEdit: (messageId: string, text: string) => void;
+  onContinue: () => void;
+}
+
+function Bubble({ message, streaming, toolStatus, isLast, busy, onEdit, onContinue }: BubbleProps) {
   const isUser = message.role === "user";
   const empty = message.content.length === 0;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content);
+  const [copied, setCopied] = useState(false);
+
+  // Edits are only meaningful once the backend has assigned a real message
+  // id (see useChat.ts's onStart reconciliation) — a still-optimistic
+  // "local-..." id has nothing on the server yet to truncate from.
+  const editable = isUser && !busy && !message.id.startsWith("local-");
+  const canContinue = !isUser && isLast && !busy && !empty;
+
+  const startEdit = () => {
+    setDraft(message.content);
+    setEditing(true);
+  };
+
+  const saveEdit = () => {
+    const text = draft.trim();
+    setEditing(false);
+    if (text && text !== message.content) onEdit(message.id, text);
+  };
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API can be unavailable (permissions, insecure context) —
+      // silently no-op rather than surface an error for a non-critical action.
+    }
+  };
+
+  if (editing) {
+    return (
+      <div className="flex justify-end">
+        <div className="w-full max-w-[85%] rounded-2xl border border-zinc-300 bg-white p-2 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+          <textarea
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                saveEdit();
+              } else if (e.key === "Escape") {
+                setEditing(false);
+              }
+            }}
+            rows={Math.min(8, Math.max(2, draft.split("\n").length))}
+            className="scroll-thin max-h-60 w-full resize-y bg-transparent px-2 py-1.5 text-sm text-zinc-900 outline-none dark:text-zinc-50"
+          />
+          <div className="flex justify-end gap-2 px-1 pb-1">
+            <button
+              onClick={() => setEditing(false)}
+              className="rounded-lg px-2.5 py-1 text-xs text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={saveEdit}
+              disabled={!draft.trim()}
+              className="rounded-lg bg-zinc-900 px-2.5 py-1 text-xs text-white disabled:opacity-30 dark:bg-zinc-100 dark:text-zinc-900"
+            >
+              Save & submit
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+    <div className={`group flex flex-col ${isUser ? "items-end" : "items-start"}`}>
       <div
         className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
           isUser
@@ -137,6 +227,76 @@ function Bubble({ message, streaming, toolStatus }: { message: Message; streamin
           <ReactMarkdown components={markdownComponents}>{message.content}</ReactMarkdown>
         )}
       </div>
+
+      {!streaming && !empty && (editable || !isUser) && (
+        <div className="mt-1 flex items-center gap-1 px-1 opacity-0 transition-opacity group-hover:opacity-100">
+          {editable && (
+            <button
+              onClick={startEdit}
+              aria-label="Edit message"
+              title="Edit message"
+              className="rounded-md p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+            >
+              <EditIcon />
+            </button>
+          )}
+          {!isUser && (
+            <button
+              onClick={copy}
+              aria-label="Copy response"
+              title={copied ? "Copied" : "Copy response"}
+              className="rounded-md p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+            >
+              {copied ? <CheckIcon /> : <CopyIcon />}
+            </button>
+          )}
+          {canContinue && (
+            <button
+              onClick={onContinue}
+              aria-label="Continue generating"
+              title="Continue this response"
+              className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+            >
+              <ContinueIcon />
+              Continue
+            </button>
+          )}
+        </div>
+      )}
     </div>
+  );
+}
+
+function EditIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="9" width="13" height="13" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function ContinueIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 3v18l15-9L5 3Z" />
+    </svg>
   );
 }

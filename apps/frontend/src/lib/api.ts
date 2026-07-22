@@ -65,6 +65,9 @@ export const api = {
   async deleteConversation(id: string): Promise<void> {
     await client.delete(`/conversation/${id}`);
   },
+  async cancelChat(requestId: string): Promise<void> {
+    await client.post(`/chat/${requestId}/cancel`);
+  },
   async getProviders(): Promise<ProviderInfo[]> {
     const { data } = await client.get<ProviderInfo[]>("/providers");
     return data;

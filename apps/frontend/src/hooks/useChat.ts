@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { api } from "@/lib/api";
 import { streamChat } from "@/lib/chatStream";
 import type { Message, TokenUsage } from "@/lib/types";
 
@@ -39,6 +40,17 @@ export function useChat(
   const [toolStatus, setToolStatus] = useState<{ name: string; query: string } | null>(null);
   const cancelRef = useRef<(() => void) | null>(null);
   const startRef = useRef<number>(0);
+  // The locally-generated id of the user message currently in flight, so it
+  // can be swapped for the real persisted id once `onStart` reports it —
+  // needed so a message can be edited again right after sending it, without
+  // waiting for a conversation refetch.
+  const pendingUserLocalIdRef = useRef<string | null>(null);
+  // The backend-assigned id of the request currently streaming — needed so
+  // Stop can tell the backend to cancel *that specific* job directly,
+  // rather than only relying on it inferring cancellation from the SSE
+  // connection dropping (which can lag well behind a fast provider's own
+  // generation speed).
+  const currentRequestIdRef = useRef<string | null>(null);
 
   // Reveal buffer: tokens land here as they arrive over SSE and a timer
   // drains them onto the screen at typing pace. Being plain refs owned by
@@ -126,7 +138,7 @@ export function useChat(
   }, [conversationId, initialMessages]);
 
   const send = useCallback(
-    (text: string, model: string | null) => {
+    (text: string, model: string | null, editMessageId?: string) => {
       if (streaming || !text.trim()) return;
       setError(null);
       setUsage(null);
@@ -135,21 +147,38 @@ export function useChat(
       toolStatusRef.current = null;
       pendingRef.current = "";
       networkDoneRef.current = false;
+      currentRequestIdRef.current = null;
       if (conversationId) trustLocalForRef.current = conversationId;
 
       const userMsg: Message = { id: localId(), role: "user", content: text, created_at: new Date().toISOString() };
       const assistantMsg: Message = { id: localId(), role: "assistant", content: "", created_at: new Date().toISOString() };
-      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      pendingUserLocalIdRef.current = userMsg.id;
+      setMessages((prev) => {
+        // Editing replaces the target message and discards everything
+        // after it (the model's old reply no longer corresponds to what
+        // was actually asked), matching what the backend does server-side.
+        const base = editMessageId
+          ? prev.slice(0, Math.max(0, prev.findIndex((m) => m.id === editMessageId)))
+          : prev;
+        return [...base, userMsg, assistantMsg];
+      });
       setStreaming(true);
       startRef.current = performance.now();
 
       cancelRef.current = streamChat(
-        { message: text, conversation_id: conversationId, model },
+        { message: text, conversation_id: conversationId, model, edit_message_id: editMessageId ?? null },
         {
           onStart: (data) => {
+            currentRequestIdRef.current = data.request_id;
             if (!conversationId) {
               trustLocalForRef.current = data.conversation_id;
               onConversationCreated(data.conversation_id);
+            }
+            const localUserId = pendingUserLocalIdRef.current;
+            if (localUserId && data.user_message_id) {
+              setMessages((prev) =>
+                prev.map((m) => (m.id === localUserId ? { ...m, id: data.user_message_id } : m)),
+              );
             }
           },
           onToken: (token) => {
@@ -185,6 +214,13 @@ export function useChat(
   );
 
   const cancel = useCallback(() => {
+    // Tell the backend directly, first — don't wait on it, and don't rely
+    // solely on it inferring cancellation from the connection dropping
+    // below, which can lag well behind a fast provider's own generation
+    // speed and let most of the response finish (and get persisted)
+    // before the implicit path ever catches up.
+    const requestId = currentRequestIdRef.current;
+    if (requestId) api.cancelChat(requestId).catch(() => {});
     cancelRef.current?.();
     cancelRef.current = null;
     stopTypingLoop();
@@ -206,7 +242,7 @@ export function useChat(
   }, [stopTypingLoop]);
 
   return { messages, streaming, usage, latencyMs, error, toolStatus, send, cancel } as ChatState & {
-    send: (text: string, model: string | null) => void;
+    send: (text: string, model: string | null, editMessageId?: string) => void;
     cancel: () => void;
   };
 }

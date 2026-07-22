@@ -49,6 +49,13 @@ export function ChatPage() {
           streaming={streaming}
           toolStatus={toolStatus}
           onSuggestion={(text) => send(text, model)}
+          onEdit={(messageId, text) => send(text, model, messageId)}
+          onContinue={() =>
+            send(
+              "Continue exactly where you left off. Do not repeat anything you already said, and do not restart the answer.",
+              model,
+            )
+          }
         />
 
         {error && (

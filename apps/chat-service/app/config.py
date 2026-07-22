@@ -71,6 +71,11 @@ class Settings(BaseServiceSettings):
     chat_job_claim_idle_ms: int = 30_000
     chat_job_claim_interval_s: float = 10.0
     chat_job_relay_timeout_s: float = 120.0
+    # Every streamed token is also appended to a short-lived Redis key so
+    # that if the worker crashes mid-stream, whichever worker reclaims the
+    # orphaned job can persist exactly what was already shown to the user
+    # instead of silently generating a different answer from scratch.
+    chat_partial_ttl_s: int = 3600
 
     @property
     def sync_database_url(self) -> str:

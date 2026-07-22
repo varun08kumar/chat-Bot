@@ -21,7 +21,7 @@ from app.dependencies import (
     get_rate_limiter,
     verify_csrf,
 )
-from app.services.chat_service import ChatService, ConversationNotFound
+from app.services.chat_service import ChatService, ConversationNotFound, MessageNotFound
 from app.services.llm_client import LLMError
 from app.services.providers import PROVIDERS
 
@@ -56,9 +56,12 @@ async def chat(
             message=payload.message,
             conversation_id=payload.conversation_id,
             model=payload.model,
+            edit_message_id=payload.edit_message_id,
         )
     except ConversationNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    except MessageNotFound:
+        raise HTTPException(status_code=404, detail="Message not found or not editable")
 
     if not payload.stream:
         started = time.perf_counter()
@@ -72,6 +75,7 @@ async def chat(
         return ChatResponse(
             conversation_id=prepared.conversation_id,
             request_id=prepared.request_id,
+            user_message_id=prepared.user_message_id,
             message=result["content"],
             model=prepared.model,
             provider=prepared.provider,
@@ -99,6 +103,28 @@ async def chat(
     return EventSourceResponse(event_generator(), ping=15)
 
 
+@router.post("/chat/{request_id}/cancel", dependencies=[Depends(verify_csrf)])
+async def cancel_chat(
+    request_id: str,
+    identity: Identity = Depends(get_identity),
+    service: ChatService = Depends(get_chat_service),
+) -> dict:
+    """Explicit cancel signal, called the moment the user clicks Stop.
+
+    The disconnect-based cancellation in ``event_generator`` below only fires
+    once this route notices the SSE connection dropped — inferring that can
+    lag well behind a fast provider's own generation speed, letting most of
+    the response finish (and get persisted) before the implicit path ever
+    catches up. Calling this directly closes that gap. ``request_id`` is an
+    unguessable uuid4 hex only ever handed to the client that started this
+    exact request (in its ``start`` event), so authentication alone is a
+    sufficient guard — no separate ownership lookup is needed.
+    """
+
+    await service.request_cancel(request_id)
+    return {"cancelled": True}
+
+
 @router.post("/chat/dummy", response_model=ChatResponse)
 async def chat_dummy(payload: ChatRequest) -> ChatResponse:
     """Load-testing only: a canned response after a fixed 10ms delay.
@@ -114,6 +140,7 @@ async def chat_dummy(payload: ChatRequest) -> ChatResponse:
     return ChatResponse(
         conversation_id=payload.conversation_id or "dummy",
         request_id=uuid.uuid4().hex,
+        user_message_id=uuid.uuid4().hex,
         message="This is a simulated response for load testing.",
         model=payload.model or "dummy",
         provider="dummy",

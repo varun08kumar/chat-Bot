@@ -40,6 +40,10 @@ def _cancel_key(request_id: str) -> str:
     return f"chat:cancel:{request_id}"
 
 
+def _partial_key(request_id: str) -> str:
+    return f"chat:partial:{request_id}"
+
+
 def _system_prompt() -> str:
     # Regenerated per-request (not a module constant) so "today" is always
     # actually today — the model otherwise has no grounded reference for it
@@ -85,6 +89,10 @@ class ConversationNotFound(Exception):
     pass
 
 
+class MessageNotFound(Exception):
+    pass
+
+
 @dataclass
 class PreparedChat:
     conversation_id: str
@@ -93,6 +101,7 @@ class PreparedChat:
     provider: str
     messages: list[dict[str, Any]]
     is_new: bool
+    user_message_id: str
 
 
 class ChatService:
@@ -124,8 +133,23 @@ class ChatService:
         await self._cache.set_messages(conversation_id, history)
         return history
 
-    async def prepare(self, *, user_id: str, message: str, conversation_id: str | None, model: str | None) -> PreparedChat:
-        """Resolve conversation, persist the user turn, and assemble the prompt."""
+    async def prepare(
+        self,
+        *,
+        user_id: str,
+        message: str,
+        conversation_id: str | None,
+        model: str | None,
+        edit_message_id: str | None = None,
+    ) -> PreparedChat:
+        """Resolve conversation, persist the user turn, and assemble the prompt.
+
+        If ``edit_message_id`` is set, that message (which must be an existing
+        ``user`` turn in this conversation) and everything after it — including
+        whatever the model replied — is deleted first, and ``message`` is
+        inserted as its replacement. The rest of the flow is identical to a
+        normal turn: the model sees only history up to the edit point.
+        """
 
         model = model or self._settings.default_model
         provider = provider_for_model(model)
@@ -141,13 +165,25 @@ class ChatService:
                 if conversation is None:
                     raise ConversationNotFound(conversation_id)
             else:
+                if edit_message_id:
+                    raise ConversationNotFound(conversation_id)
                 title = _derive_title(message)
                 conversation = await conv_repo.create(user_id=user_id, title=title)
                 conversation_id = conversation.id
                 is_new = True
 
+            if edit_message_id:
+                target = await msg_repo.get(edit_message_id, conversation_id=conversation_id)
+                if target is None or target.role != "user":
+                    raise MessageNotFound(edit_message_id)
+                await msg_repo.delete_from(conversation_id, edit_message_id)
+                # The cache may still hold messages we just deleted; drop it
+                # so _load_history below re-reads the truncated history from
+                # the DB instead of serving the stale cached tail.
+                await self._cache.invalidate(conversation_id)
+
             history = [] if is_new else await self._load_history(msg_repo, conversation_id)
-            await msg_repo.add(conversation_id=conversation_id, role="user", content=message)
+            user_message = await msg_repo.add(conversation_id=conversation_id, role="user", content=message)
             await conv_repo.touch(conversation_id)
 
         prompt_messages = (
@@ -165,6 +201,7 @@ class ChatService:
             provider=provider,
             messages=prompt_messages,
             is_new=is_new,
+            user_message_id=user_message.id,
         )
 
     async def _persist_assistant(self, conversation_id: str, content: str) -> None:
@@ -205,6 +242,7 @@ class ChatService:
         yield {"event": "start", "data": {
             "conversation_id": prepared.conversation_id,
             "request_id": prepared.request_id,
+            "user_message_id": prepared.user_message_id,
             "model": prepared.model,
             "provider": prepared.provider,
         }}
@@ -219,6 +257,16 @@ class ChatService:
                 async for event in self._llm.stream(model=prepared.model, messages=prepared.messages):
                     if event["type"] == "token":
                         collected.append(event["content"])
+                        # Durable outside this process's memory: if this
+                        # worker crashes before the finally block below runs,
+                        # whichever worker reclaims the orphaned job (see
+                        # ChatService.recover_or_run) can persist exactly
+                        # what was already streamed to the user, instead of
+                        # silently generating a different answer from scratch.
+                        async with self._redis.pipeline(transaction=False) as pipe:
+                            pipe.append(_partial_key(prepared.request_id), event["content"])
+                            pipe.expire(_partial_key(prepared.request_id), self._settings.chat_partial_ttl_s)
+                            await pipe.execute()
                         yield {"event": "token", "data": {"content": event["content"]}}
                     elif event["type"] == "usage":
                         usage = {k: v for k, v in event.items() if k != "type"}
@@ -243,6 +291,10 @@ class ChatService:
             text = "".join(collected)
             if text:
                 await self._persist_assistant(prepared.conversation_id, text)
+            # This process is finishing the job itself (whether cleanly,
+            # cancelled, or errored) — nothing will need to recover it, so
+            # the partial buffer no longer needs to survive a crash.
+            await self._redis.delete(_partial_key(prepared.request_id))
         if not errored:
             yield {"event": "done", "data": {
                 "conversation_id": prepared.conversation_id,
@@ -271,6 +323,7 @@ class ChatService:
             job = {
                 "conversation_id": prepared.conversation_id,
                 "request_id": prepared.request_id,
+                "user_message_id": prepared.user_message_id,
                 "model": prepared.model,
                 "provider": prepared.provider,
                 "messages": prepared.messages,
@@ -307,6 +360,34 @@ class ChatService:
         channel = _event_channel(prepared.request_id)
         async for event in self.stream(prepared, user_id=user_id, session_id=session_id):
             await self._redis.publish(channel, json.dumps(event))
+
+    async def recover_or_run(self, prepared: PreparedChat, *, user_id: str, session_id: str) -> None:
+        """Entry point for the worker loop — covers both fresh jobs and ones
+        reclaimed from a crashed worker (see chat_worker.py's
+        reclaim_orphaned/XAUTOCLAIM).
+
+        A fresh job has no partial buffer yet (nothing has streamed), so this
+        just runs normally. A reclaimed job may have one: its original worker
+        died mid-stream, after showing the user some tokens but before its own
+        ``stream()`` call reached the ``finally`` block that persists and
+        cleans up. In that case we persist exactly what was already shown
+        instead of silently generating a different answer from scratch —
+        the model is never called again here. Whether to get the rest of the
+        answer becomes the user's own choice, via the existing Continue
+        button, once the truncated message is just sitting in history like
+        any other turn.
+        """
+
+        partial = await self._redis.get(_partial_key(prepared.request_id))
+        if partial:
+            await self._persist_assistant(prepared.conversation_id, partial)
+            await self._redis.delete(_partial_key(prepared.request_id))
+            logger.warning(
+                "Recovered a crashed worker's partial response",
+                extra={"request_id": prepared.request_id, "chars_recovered": len(partial)},
+            )
+            return
+        await self.run_and_publish(prepared, user_id=user_id, session_id=session_id)
 
     async def request_cancel(self, request_id: str) -> None:
         """Flag a request as cancelled so the worker (which isn't driven by

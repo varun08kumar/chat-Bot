@@ -43,8 +43,8 @@ PROVIDERS: dict[str, ProviderInfo] = {
         label="Anthropic",
         api_key_setting="anthropic_api_key",
         models=[
-            ModelInfo("claude-3-5-sonnet-latest", "Claude 3.5 Sonnet", 200_000),
-            ModelInfo("claude-3-5-haiku-latest", "Claude 3.5 Haiku", 200_000),
+            ModelInfo("anthropic/claude-3-5-sonnet-latest", "Claude 3.5 Sonnet", 200_000),
+            ModelInfo("anthropic/claude-3-5-haiku-latest", "Claude 3.5 Haiku", 200_000),
         ],
     ),
     "groq": ProviderInfo(

@@ -2,7 +2,13 @@ import { API_BASE, readCookie, sessionId } from "./api";
 import type { TokenUsage } from "./types";
 
 export interface StreamHandlers {
-  onStart?: (data: { conversation_id: string; request_id: string; model: string; provider: string }) => void;
+  onStart?: (data: {
+    conversation_id: string;
+    request_id: string;
+    user_message_id: string;
+    model: string;
+    provider: string;
+  }) => void;
   onToken?: (token: string) => void;
   onToolCall?: (data: { name: string; query: string }) => void;
   onUsage?: (usage: TokenUsage) => void;
@@ -14,6 +20,7 @@ export interface StreamRequest {
   message: string;
   conversation_id?: string | null;
   model?: string | null;
+  edit_message_id?: string | null;
 }
 
 /**

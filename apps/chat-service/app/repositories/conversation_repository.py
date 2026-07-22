@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from llm_obs_shared.db.models import Conversation, ConversationStatus, Message
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -94,3 +94,22 @@ class MessageRepository:
             .limit(limit)
         )
         return list((await self._session.execute(stmt)).scalars().all())
+
+    async def get(self, message_id: str, *, conversation_id: str) -> Message | None:
+        stmt = select(Message).where(
+            Message.id == message_id, Message.conversation_id == conversation_id
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def delete_from(self, conversation_id: str, message_id: str) -> bool:
+        """Delete ``message_id`` and every message after it (editing a user
+        turn invalidates whatever the model said in response to it, so that
+        reply — and anything after it — has to go along with the edit)."""
+
+        ordered = await self.history(conversation_id, limit=10_000)
+        ids = [m.id for m in ordered]
+        if message_id not in ids:
+            return False
+        to_delete = ids[ids.index(message_id) :]
+        await self._session.execute(delete(Message).where(Message.id.in_(to_delete)))
+        return True

@@ -39,10 +39,22 @@ class KafkaLogProducer:
         self._producer = None  # type: ignore[var-annotated]
         self._worker: Optional[asyncio.Task] = None
         self._started = False
+        self._connected = False
         self._dropped = 0
 
     async def start(self) -> None:
-        """Create the underlying aiokafka producer and launch the drain worker."""
+        """Prepare the producer and launch its background connect+drain worker.
+
+        Deliberately does not await the broker connection itself: an
+        application calling this during its own startup must never fail to
+        boot just because Kafka isn't reachable *yet* (a common race in
+        orchestrated startups, where pods can come up before their
+        dependencies are ready). ``emit()`` already buffers into the
+        in-memory queue regardless of connection state, so events queue up
+        normally and get drained once the connection succeeds — this just
+        extends the same "never block on Kafka" principle to startup, not
+        only to steady-state sends.
+        """
 
         if self._started or not self._config.enabled:
             return
@@ -59,10 +71,33 @@ class KafkaLogProducer:
             linger_ms=20,
             request_timeout_ms=10_000,
         )
-        await self._producer.start()
-        self._worker = asyncio.create_task(self._drain(), name="sdk-kafka-drain")
         self._started = True
+        self._worker = asyncio.create_task(self._connect_and_drain(), name="sdk-kafka-connect-drain")
+
+    async def _connect_and_drain(self) -> None:
+        """Retry connecting to the broker indefinitely (capped backoff), then
+        run the normal drain loop once connected. A single background task
+        owns the producer's whole lifecycle so ``stop()`` only ever has one
+        thing to cancel, whether or not the connection ever succeeded."""
+
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                await self._producer.start()
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - any connection failure, keep retrying
+                backoff = min(1.0 * (2 ** (attempt - 1)), 30.0)
+                logger.warning(
+                    "SDK Kafka producer could not connect; retrying in the background",
+                    extra={"attempt": attempt, "backoff_s": backoff, "error": str(exc)},
+                )
+                await asyncio.sleep(backoff)
+        self._connected = True
         logger.info("SDK Kafka producer started", extra={"topic": self._config.topic})
+        await self._drain()
 
     async def stop(self) -> None:
         """Flush outstanding events and shut the producer down gracefully."""
@@ -71,16 +106,17 @@ class KafkaLogProducer:
             return
         self._started = False
         if self._worker is not None:
-            try:
-                await asyncio.wait_for(self._queue.join(), timeout=self._config.flush_timeout_s)
-            except asyncio.TimeoutError:
-                logger.warning("Timed out flushing SDK queue on shutdown")
+            if self._connected:
+                try:
+                    await asyncio.wait_for(self._queue.join(), timeout=self._config.flush_timeout_s)
+                except asyncio.TimeoutError:
+                    logger.warning("Timed out flushing SDK queue on shutdown")
             self._worker.cancel()
             try:
                 await self._worker
             except asyncio.CancelledError:
                 pass
-        if self._producer is not None:
+        if self._connected and self._producer is not None:
             await self._producer.stop()
         logger.info("SDK Kafka producer stopped", extra={"dropped_events": self._dropped})
 

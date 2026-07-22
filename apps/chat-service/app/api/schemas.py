@@ -12,6 +12,7 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
     model: str | None = None
     stream: bool = True
+    edit_message_id: str | None = None
 
 
 class TokenUsageOut(BaseModel):
@@ -23,6 +24,7 @@ class TokenUsageOut(BaseModel):
 class ChatResponse(BaseModel):
     conversation_id: str
     request_id: str
+    user_message_id: str
     message: str
     model: str
     provider: str

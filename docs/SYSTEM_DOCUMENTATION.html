@@ -205,6 +205,33 @@
     overflow-x: auto;
     box-shadow: var(--shadow);
   }
+  /* Diagram cards are deliberately white "paper" in both themes, so mermaid's
+     own text must always render dark here — otherwise a host page rendering
+     in dark mode can hand mermaid light-colored text, which then disappears
+     against this permanently-white card (invisible until text-selected). */
+  .diagram-card .mermaid text,
+  .diagram-card .mermaid tspan,
+  .diagram-card .mermaid .nodeLabel,
+  .diagram-card .mermaid .edgeLabel,
+  .diagram-card .mermaid .label,
+  .diagram-card .mermaid .messageText,
+  .diagram-card .mermaid .loopText,
+  .diagram-card .mermaid .loopText tspan,
+  .diagram-card .mermaid .noteText,
+  .diagram-card .mermaid .actor-line + text,
+  .diagram-card .mermaid .actor text {
+    fill: #1B1C20 !important;
+    color: #1B1C20 !important;
+  }
+  .diagram-card .mermaid .edgeLabel rect,
+  .diagram-card .mermaid .labelBkg {
+    fill: #ffffff !important;
+  }
+  .diagram-card .mermaid .messageLine0,
+  .diagram-card .mermaid .messageLine1,
+  .diagram-card .mermaid .flowchart-link {
+    stroke: #5B5E67 !important;
+  }
   .diagram-caption {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12px;
