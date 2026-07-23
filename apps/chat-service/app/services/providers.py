@@ -65,6 +65,14 @@ PROVIDERS: dict[str, ProviderInfo] = {
             ModelInfo("gemini/gemini-1.5-pro", "Gemini 1.5 Pro", 2_000_000),
         ],
     ),
+    "xai": ProviderInfo(
+        id="xai",
+        label="xAI Grok",
+        api_key_setting="xai_api_key",
+        models=[
+            ModelInfo("xai/grok-2-latest", "Grok 2", 131_072),
+        ],
+    ),
 }
 
 

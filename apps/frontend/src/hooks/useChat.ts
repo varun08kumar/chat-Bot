@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import axios from "axios";
 import { api } from "@/lib/api";
 import { streamChat } from "@/lib/chatStream";
 import type { Message, TokenUsage } from "@/lib/types";
@@ -213,6 +214,63 @@ export function useChat(
     [conversationId, streaming, onConversationCreated, qc, ensureTypingLoop, maybeFinish, stopTypingLoop],
   );
 
+  // Shared by sendImage/sendImageSearch below: both are non-streaming,
+  // request/response round trips that persist a user+assistant turn
+  // server-side and just need the result dropped into local state — unlike
+  // `send`, there's no SSE relay or typing animation involved.
+  const runImageAction = useCallback(
+    async (
+      text: string,
+      call: (conversationId: string | null) => Promise<{
+        conversation_id: string;
+        user_message: Message;
+        assistant_message: Message;
+      }>,
+      failureMessage: string,
+    ) => {
+      if (streaming || !text.trim()) return;
+      setError(null);
+      setUsage(null);
+      setLatencyMs(null);
+      if (conversationId) trustLocalForRef.current = conversationId;
+
+      const userMsg: Message = { id: localId(), role: "user", content: text, created_at: new Date().toISOString() };
+      setMessages((prev) => [...prev, userMsg]);
+      setStreaming(true);
+      startRef.current = performance.now();
+
+      try {
+        const result = await call(conversationId);
+        if (!conversationId) {
+          trustLocalForRef.current = result.conversation_id;
+          onConversationCreated(result.conversation_id);
+        }
+        setMessages((prev) => [
+          ...prev.map((m) => (m.id === userMsg.id ? result.user_message : m)),
+          result.assistant_message,
+        ]);
+        qc.invalidateQueries({ queryKey: ["conversations"] });
+      } catch (err) {
+        const message = axios.isAxiosError(err) ? err.response?.data?.detail ?? err.message : failureMessage;
+        setError(message);
+      } finally {
+        setStreaming(false);
+        setLatencyMs(performance.now() - startRef.current);
+      }
+    },
+    [streaming, conversationId, onConversationCreated, qc],
+  );
+
+  const sendImage = useCallback(
+    (prompt: string) => runImageAction(prompt, (cid) => api.generateImage(prompt, cid), "Image generation failed"),
+    [runImageAction],
+  );
+
+  const sendImageSearch = useCallback(
+    (query: string) => runImageAction(query, (cid) => api.searchImage(query, cid), "Image search failed"),
+    [runImageAction],
+  );
+
   const cancel = useCallback(() => {
     // Tell the backend directly, first — don't wait on it, and don't rely
     // solely on it inferring cancellation from the connection dropping
@@ -241,8 +299,21 @@ export function useChat(
     stopTypingLoop();
   }, [stopTypingLoop]);
 
-  return { messages, streaming, usage, latencyMs, error, toolStatus, send, cancel } as ChatState & {
+  return {
+    messages,
+    streaming,
+    usage,
+    latencyMs,
+    error,
+    toolStatus,
+    send,
+    sendImage,
+    sendImageSearch,
+    cancel,
+  } as ChatState & {
     send: (text: string, model: string | null, editMessageId?: string) => void;
+    sendImage: (prompt: string) => Promise<void>;
+    sendImageSearch: (query: string) => Promise<void>;
     cancel: () => void;
   };
 }

@@ -40,6 +40,7 @@ class Settings(BaseServiceSettings):
     anthropic_api_key: str | None = None
     groq_api_key: str | None = None
     gemini_api_key: str | None = None
+    xai_api_key: str | None = None
 
     # Web search tool (self-hosted SearXNG - see infra/searxng).
     searxng_url: str = "http://searxng:8080"

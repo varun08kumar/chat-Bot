@@ -3,6 +3,7 @@ import type {
   Conversation,
   ConversationDetail,
   Dashboard,
+  Message,
   ProviderInfo,
   User,
 } from "./types";
@@ -67,6 +68,20 @@ export const api = {
   },
   async cancelChat(requestId: string): Promise<void> {
     await client.post(`/chat/${requestId}/cancel`);
+  },
+  async generateImage(
+    prompt: string,
+    conversationId: string | null,
+  ): Promise<{ conversation_id: string; user_message: Message; assistant_message: Message }> {
+    const { data } = await client.post("/images/generate", { prompt, conversation_id: conversationId });
+    return data;
+  },
+  async searchImage(
+    query: string,
+    conversationId: string | null,
+  ): Promise<{ conversation_id: string; user_message: Message; assistant_message: Message }> {
+    const { data } = await client.post("/images/search", { query, conversation_id: conversationId });
+    return data;
   },
   async getProviders(): Promise<ProviderInfo[]> {
     const { data } = await client.get<ProviderInfo[]>("/providers");

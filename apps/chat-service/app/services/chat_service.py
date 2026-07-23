@@ -7,6 +7,7 @@ client but contains no framework or SQL details itself.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import time
 import uuid
@@ -25,9 +26,11 @@ from app.repositories.conversation_repository import (
     MessageRepository,
 )
 from app.services.cache import ConversationCache
+from app.services.image_gen import ImageGenError, generate_image
 from app.services.job_queue import ChatJobQueue
 from app.services.llm_client import LLMClient, LLMError
 from app.services.providers import provider_for_model
+from app.services.web_search import WebSearchError, fetch_first_working_image, image_search
 
 logger = get_logger(__name__)
 
@@ -388,6 +391,127 @@ class ChatService:
             )
             return
         await self.run_and_publish(prepared, user_id=user_id, session_id=session_id)
+
+    async def generate_image(
+        self, *, user_id: str, conversation_id: str | None, prompt: str
+    ) -> dict[str, Any]:
+        """Generate an image via Pollinations.ai and persist it as a turn.
+
+        The image is stored as a markdown image tag (a ``data:`` URI) in an
+        assistant message's ``content`` — the frontend already renders
+        assistant content through ``react-markdown``, so this needs no new
+        message type or rendering path, just a normal message the image
+        happens to be embedded in.
+        """
+
+        async with self._db.session() as session:
+            conv_repo = ConversationRepository(session)
+            msg_repo = MessageRepository(session)
+
+            is_new = False
+            if conversation_id:
+                conversation = await conv_repo.get(conversation_id, user_id=user_id)
+                if conversation is None:
+                    raise ConversationNotFound(conversation_id)
+            else:
+                conversation = await conv_repo.create(user_id=user_id, title=_derive_title(prompt))
+                conversation_id = conversation.id
+                is_new = True
+
+            user_message = await msg_repo.add(conversation_id=conversation_id, role="user", content=prompt)
+            await conv_repo.touch(conversation_id)
+
+        data_uri = await generate_image(prompt)
+        content = f"![{prompt}]({data_uri})"
+
+        async with self._db.session() as session:
+            msg_repo = MessageRepository(session)
+            conv_repo = ConversationRepository(session)
+            assistant_message = await msg_repo.add(conversation_id=conversation_id, role="assistant", content=content)
+            await conv_repo.touch(conversation_id)
+        await self._cache.invalidate(conversation_id)
+
+        return {
+            "conversation_id": conversation_id,
+            "is_new": is_new,
+            "user_message": {
+                "id": user_message.id,
+                "role": "user",
+                "content": prompt,
+                "created_at": user_message.created_at,
+            },
+            "assistant_message": {
+                "id": assistant_message.id,
+                "role": "assistant",
+                "content": content,
+                "created_at": assistant_message.created_at,
+            },
+        }
+
+    async def search_image(
+        self, *, user_id: str, conversation_id: str | None, query: str
+    ) -> dict[str, Any]:
+        """Find a real photo on the web (via SearXNG's image category) and
+        persist it as a turn — distinct from ``generate_image``, which
+        fabricates a new image rather than fetching an existing one.
+        """
+
+        results = await image_search(query, base_url=self._settings.searxng_url, max_results=10)
+        if not results:
+            raise WebSearchError(f"No image results found for '{query}'.")
+        found = await fetch_first_working_image(results)
+        if found is None:
+            raise WebSearchError(f"Found results for '{query}', but none of their images could be loaded.")
+        top, image_bytes, content_type = found
+
+        async with self._db.session() as session:
+            conv_repo = ConversationRepository(session)
+            msg_repo = MessageRepository(session)
+
+            is_new = False
+            if conversation_id:
+                conversation = await conv_repo.get(conversation_id, user_id=user_id)
+                if conversation is None:
+                    raise ConversationNotFound(conversation_id)
+            else:
+                conversation = await conv_repo.create(user_id=user_id, title=_derive_title(query))
+                conversation_id = conversation.id
+                is_new = True
+
+            user_message = await msg_repo.add(conversation_id=conversation_id, role="user", content=query)
+            await conv_repo.touch(conversation_id)
+
+        # Embedded as a data: URI - not the original img_src - so the
+        # browser never makes a cross-origin request to the source site at
+        # all, sidestepping any hotlink protection that would otherwise
+        # block the embed even though our own server-side fetch succeeded.
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        data_uri = f"data:{content_type};base64,{b64}"
+        content = f"![{top['title'] or query}]({data_uri})\n\n[Source]({top['page_url']})"
+
+        async with self._db.session() as session:
+            msg_repo = MessageRepository(session)
+            conv_repo = ConversationRepository(session)
+            assistant_message = await msg_repo.add(conversation_id=conversation_id, role="assistant", content=content)
+            await conv_repo.touch(conversation_id)
+        await self._cache.invalidate(conversation_id)
+
+        return {
+            "conversation_id": conversation_id,
+            "is_new": is_new,
+            "user_message": {
+                "id": user_message.id,
+                "role": "user",
+                "content": query,
+                "created_at": user_message.created_at,
+            },
+            "assistant_message": {
+                "id": assistant_message.id,
+                "role": "assistant",
+                "content": content,
+                "created_at": assistant_message.created_at,
+            },
+        }
 
     async def request_cancel(self, request_id: str) -> None:
         """Flag a request as cancelled so the worker (which isn't driven by

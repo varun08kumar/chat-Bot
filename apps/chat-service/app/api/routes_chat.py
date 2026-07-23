@@ -11,7 +11,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from llm_obs_shared.logging import get_logger
 from sse_starlette.sse import EventSourceResponse
 
-from app.api.schemas import ChatRequest, ChatResponse, ProviderOut, TokenUsageOut
+from app.api.schemas import (
+    ChatRequest,
+    ChatResponse,
+    ImageGenerateRequest,
+    ImageGenerateResponse,
+    ImageSearchRequest,
+    ImageSearchResponse,
+    ProviderOut,
+    TokenUsageOut,
+)
 from app.config import Settings, get_settings
 from app.dependencies import (
     Identity,
@@ -22,8 +31,10 @@ from app.dependencies import (
     verify_csrf,
 )
 from app.services.chat_service import ChatService, ConversationNotFound, MessageNotFound
+from app.services.image_gen import ImageGenError
 from app.services.llm_client import LLMError
 from app.services.providers import PROVIDERS
+from app.services.web_search import WebSearchError
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["chat"])
@@ -123,6 +134,50 @@ async def cancel_chat(
 
     await service.request_cancel(request_id)
     return {"cancelled": True}
+
+
+@router.post("/images/generate", response_model=ImageGenerateResponse, dependencies=[Depends(verify_csrf)])
+async def generate_image(
+    payload: ImageGenerateRequest,
+    identity: Identity = Depends(get_identity),
+    service: ChatService = Depends(get_chat_service),
+    limiter: RateLimiter = Depends(get_rate_limiter),
+) -> ImageGenerateResponse:
+    """Generate an image from a prompt (backed by xAI's Grok) and persist it
+    as a turn in the conversation, same as a normal chat message."""
+
+    await _enforce_rate_limit(limiter, identity)
+    try:
+        result = await service.generate_image(
+            user_id=identity.user_id, conversation_id=payload.conversation_id, prompt=payload.prompt
+        )
+    except ConversationNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except ImageGenError as exc:
+        raise HTTPException(status_code=502, detail=f"Image generation failed: {exc}")
+    return ImageGenerateResponse(**result)
+
+
+@router.post("/images/search", response_model=ImageSearchResponse, dependencies=[Depends(verify_csrf)])
+async def search_image(
+    payload: ImageSearchRequest,
+    identity: Identity = Depends(get_identity),
+    service: ChatService = Depends(get_chat_service),
+    limiter: RateLimiter = Depends(get_rate_limiter),
+) -> ImageSearchResponse:
+    """Find a real photo on the web (via SearXNG) and persist it as a turn —
+    for when the user wants an actual existing image, not a generated one."""
+
+    await _enforce_rate_limit(limiter, identity)
+    try:
+        result = await service.search_image(
+            user_id=identity.user_id, conversation_id=payload.conversation_id, query=payload.query
+        )
+    except ConversationNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except WebSearchError as exc:
+        raise HTTPException(status_code=502, detail=f"Image search failed: {exc}")
+    return ImageSearchResponse(**result)
 
 
 @router.post("/chat/dummy", response_model=ChatResponse)

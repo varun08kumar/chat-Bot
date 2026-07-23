@@ -19,7 +19,7 @@ export function ChatPage() {
   const { data: detail } = useConversation(conversationId);
   const initialMessages = useMemo(() => detail?.messages ?? EMPTY, [detail]);
 
-  const { messages, streaming, usage, latencyMs, error, toolStatus, send, cancel } = useChat(
+  const { messages, streaming, usage, latencyMs, error, toolStatus, send, sendImage, sendImageSearch, cancel } = useChat(
     conversationId,
     initialMessages,
     (id) => navigate(`/c/${id}`),
@@ -63,7 +63,13 @@ export function ChatPage() {
         )}
 
         <UsageBar usage={usage} latencyMs={latencyMs} model={model} />
-        <Composer streaming={streaming} onSend={(t) => send(t, model)} onCancel={cancel} />
+        <Composer
+          streaming={streaming}
+          onSend={(t) => send(t, model)}
+          onSendImage={sendImage}
+          onSendImageSearch={sendImageSearch}
+          onCancel={cancel}
+        />
       </section>
     </div>
   );

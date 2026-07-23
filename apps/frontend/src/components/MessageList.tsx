@@ -1,7 +1,63 @@
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Message } from "@/lib/types";
 import type { Components } from "react-markdown";
+
+// Search-mode images are hotlinked straight from whatever site SearXNG found
+// them on — some are slow, and a rare few never resolve at all. Show a
+// loading placeholder while it's in flight, and if it hasn't loaded within
+// IMAGE_LOAD_TIMEOUT_MS (browsers don't otherwise expose a "just give up"
+// signal), fall back to a plain link rather than leaving a broken-image icon
+// on screen indefinitely. Generated (data: URI) images load instantly from
+// the page itself, so this just resolves immediately for those.
+const IMAGE_LOAD_TIMEOUT_MS = 15_000;
+
+function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
+  const [status, setStatus] = useState<"loading" | "loaded" | "error">("loading");
+  const imgRef = useRef<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    setStatus("loading");
+    // A big data: URI can finish decoding faster than React commits the DOM
+    // node and attaches its onLoad listener — the native `load` event fires
+    // in that gap and is simply missed, leaving onLoad never called even
+    // though the image genuinely loaded (confirmed via img.complete). This
+    // check catches that race on mount, in addition to the normal
+    // onLoad/onError handlers below for the slower real-network case.
+    if (imgRef.current?.complete && imgRef.current.naturalWidth > 0) {
+      setStatus("loaded");
+      return;
+    }
+    const timer = setTimeout(() => setStatus((s) => (s === "loading" ? "error" : s)), IMAGE_LOAD_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [src]);
+
+  if (status === "error" || !src) {
+    return (
+      <a href={src} target="_blank" rel="noreferrer" className="text-brand-600 underline dark:text-brand-500">
+        {alt || src || "image"}
+      </a>
+    );
+  }
+
+  return (
+    <span className="mb-2 block last:mb-0">
+      {status === "loading" && (
+        <span className="flex h-40 w-full max-w-xs animate-pulse items-center justify-center rounded-lg bg-zinc-100 text-xs text-zinc-400 dark:bg-zinc-800">
+          Loading image…
+        </span>
+      )}
+      <img
+        ref={imgRef}
+        src={src}
+        alt={alt}
+        onLoad={() => setStatus("loaded")}
+        onError={() => setStatus("error")}
+        className={`max-w-full rounded-lg ${status === "loading" ? "hidden" : ""}`}
+      />
+    </span>
+  );
+}
 
 // Assistant messages come back as markdown (LLM providers write **bold**,
 // numbered lists, code fences, etc.) — render it instead of dumping the raw
@@ -36,10 +92,19 @@ const markdownComponents: Components = {
       {children}
     </blockquote>
   ),
+  img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} />,
   h1: ({ children }) => <h3 className="mb-1.5 mt-2 text-base font-semibold first:mt-0">{children}</h3>,
   h2: ({ children }) => <h3 className="mb-1.5 mt-2 text-base font-semibold first:mt-0">{children}</h3>,
   h3: ({ children }) => <h3 className="mb-1.5 mt-2 text-sm font-semibold first:mt-0">{children}</h3>,
 };
+
+// react-markdown's default urlTransform strips any URL scheme outside its
+// safe-list (http/https/irc(s)/mailto) — data: URIs get silently blanked
+// out, which is exactly how the backend hands back a generated image. Allow
+// data:image/* specifically rather than disabling the sanitizer outright,
+// so other message content (which can contain arbitrary LLM-authored links)
+// keeps the default protection.
+const allowDataImages = (url: string) => (url.startsWith("data:image/") ? url : defaultUrlTransform(url));
 
 const SUGGESTIONS = [
   "Explain a complex topic simply",
@@ -224,7 +289,7 @@ function Bubble({ message, streaming, toolStatus, isLast, busy, onEdit, onContin
         ) : isUser ? (
           message.content
         ) : (
-          <ReactMarkdown components={markdownComponents}>{message.content}</ReactMarkdown>
+          <ReactMarkdown components={markdownComponents} urlTransform={allowDataImages}>{message.content}</ReactMarkdown>
         )}
       </div>
 

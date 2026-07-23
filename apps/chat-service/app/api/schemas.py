@@ -39,6 +39,28 @@ class MessageOut(BaseModel):
     created_at: datetime
 
 
+class ImageGenerateRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=4_000)
+    conversation_id: str | None = None
+
+
+class ImageGenerateResponse(BaseModel):
+    conversation_id: str
+    user_message: MessageOut
+    assistant_message: MessageOut
+
+
+class ImageSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=4_000)
+    conversation_id: str | None = None
+
+
+class ImageSearchResponse(BaseModel):
+    conversation_id: str
+    user_message: MessageOut
+    assistant_message: MessageOut
+
+
 class ConversationOut(BaseModel):
     id: str
     title: str
